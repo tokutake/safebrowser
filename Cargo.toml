@@ -1,0 +1,12 @@
+[package]
+name = "safebrowser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+encoding_rs = "0.8.42"
+fontdue = "0.9.5"
+minifb = "0.29.0"
+ureq = "2"
+url = "2.5.8"
