@@ -184,6 +184,7 @@ pub struct Style {
     border_on: [bool; 4],
     pub border_color: u32,
     pub width: Len,
+    pub height: Len,
     pub max_width: Len,
     /// The common "visually hidden" (sr-only) pattern: content meant only for screen readers.
     visually_hidden: bool,
@@ -236,6 +237,7 @@ impl Style {
             border_on: [false; 4],
             border_color: 0x1f1f1f,
             width: Len::Auto,
+            height: Len::Auto,
             max_width: Len::Auto,
             visually_hidden: false,
             height_1px: false,
@@ -274,6 +276,7 @@ impl Style {
             border_on: [false; 4],
             border_color: parent.color,
             width: Len::Auto,
+            height: Len::Auto,
             max_width: Len::Auto,
             visually_hidden: false,
             height_1px: false,
@@ -703,7 +706,11 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
         "margin" => apply_box(&mut s.margin, v, s.font_size, true),
         "padding" => apply_box(&mut s.padding, v, s.font_size, false),
         "width" => s.width = parse_length(v, s.font_size).unwrap_or(s.width),
-        "height" => s.height_1px = matches!(parse_length(v, s.font_size), Some(Len::Px(h)) if h <= 1.0),
+        "height" => {
+            let height = parse_length(v, s.font_size);
+            s.height_1px = matches!(height, Some(Len::Px(h)) if h <= 1.0);
+            s.height = height.unwrap_or(s.height);
+        }
         "clip" => s.visually_hidden |= v.starts_with("rect(0"),
         // Approximation: hidden content is almost always an out-of-flow menu or popup,
         // so dropping it (instead of reserving its space) is closer to what users see
@@ -849,6 +856,12 @@ fn apply_presentational_hints(el: &Element, s: &mut Style, parent: &Style) {
     let attr = |name: &str| el.attr(name).map(|v| v.trim().to_ascii_lowercase());
     if let Some(color) = attr("bgcolor") {
         apply(s, parent, "background-color", &color);
+    }
+    if el.tag == "img" {
+        if let Some(height) = attr("height") {
+            let height = if height.chars().all(|c| c.is_ascii_digit()) { format!("{height}px") } else { height };
+            apply(s, parent, "height", &height);
+        }
     }
     if matches!(el.tag.as_str(), "table" | "td" | "th" | "img" | "hr") {
         if let Some(width) = attr("width") {

@@ -9,6 +9,11 @@ use fontdue::{Font, FontSettings, Metrics};
 const MAX_CACHED_GLYPHS: usize = 20_000;
 const MAX_CACHED_ADVANCES: usize = 100_000;
 const FALLBACK_FONT: &str = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf";
+/// Used when the macOS fonts are missing (Linux): (regular, bold).
+const LINUX_FONTS: [(&str, &str); 2] = [
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ("/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"),
+];
 
 type GlyphKey = (char, u16, bool);
 
@@ -22,8 +27,13 @@ pub struct Fonts {
 impl Fonts {
     /// Loads Hiragino Sans (W3 / W6), which covers Japanese.
     pub fn load() -> Result<Fonts> {
-        let regular_path = find_system_font("W3.ttc").unwrap_or_else(|| PathBuf::from(FALLBACK_FONT));
-        let bold_path = find_system_font("W6.ttc").unwrap_or_else(|| regular_path.clone());
+        let linux = LINUX_FONTS.iter().find(|(regular, _)| Path::new(regular).exists());
+        let regular_path = find_system_font("W3.ttc")
+            .or_else(|| linux.map(|(regular, _)| PathBuf::from(regular)))
+            .unwrap_or_else(|| PathBuf::from(FALLBACK_FONT));
+        let bold_path = find_system_font("W6.ttc")
+            .or_else(|| linux.map(|(_, bold)| PathBuf::from(bold)))
+            .unwrap_or_else(|| regular_path.clone());
         Ok(Fonts {
             regular: load_font(&regular_path)?,
             bold: load_font(&bold_path)?,
