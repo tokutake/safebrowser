@@ -1,8 +1,10 @@
 //! Software rendering into a 0RGB u32 pixel buffer.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::font::Fonts;
+use crate::image::Image;
 use crate::layout::{Item, PageLayout, Target};
 
 pub struct Canvas {
@@ -11,11 +13,13 @@ pub struct Canvas {
     pub buf: Vec<u32>,
     /// [x0, y0, x1, y1)
     clip: [i32; 4],
+    /// Images resampled to their display size, keyed by (image address, width, height).
+    scaled: HashMap<(usize, u32, u32), Vec<u32>>,
 }
 
 impl Canvas {
     pub fn new(w: usize, h: usize) -> Self {
-        Canvas { w, h, buf: vec![0xffffff; w * h], clip: [0, 0, w as i32, h as i32] }
+        Canvas { w, h, buf: vec![0xffffff; w * h], clip: [0, 0, w as i32, h as i32], scaled: HashMap::new() }
     }
 
     pub fn resize(&mut self, w: usize, h: usize) {
@@ -46,6 +50,42 @@ impl Canvas {
         for row in y0..y1 {
             let start = row as usize * self.w;
             self.buf[start + x0 as usize..start + x1 as usize].fill(color);
+        }
+    }
+
+    /// Draws an image scaled to the box (x, y, w, h).
+    pub fn image(&mut self, x: f32, y: f32, w: f32, h: f32, image: &Arc<Image>) {
+        let (dw, dh) = ((w.round() as u32).max(1), (h.round() as u32).max(1));
+        let (dx, dy) = (x.round() as i32, y.round() as i32);
+        // Skip work for images that are entirely outside the clip
+        if dx >= self.clip[2] || dy >= self.clip[3] || dx + dw as i32 <= self.clip[0] || dy + dh as i32 <= self.clip[1] {
+            return;
+        }
+        // Pixel budget: a few huge images must not grow the cache without bound
+        if self.scaled.len() > 64 || self.scaled.values().map(Vec::len).sum::<usize>() > 32 * 1024 * 1024 {
+            self.scaled.clear();
+        }
+        let key = (Arc::as_ptr(image) as usize, dw, dh);
+        let pixels = self.scaled.entry(key).or_insert_with(|| resample(image, dw, dh));
+        for row in 0..dh as i32 {
+            let y = dy + row;
+            if y < self.clip[1] || y >= self.clip[3] {
+                continue;
+            }
+            for col in 0..dw as i32 {
+                let x = dx + col;
+                if x < self.clip[0] || x >= self.clip[2] {
+                    continue;
+                }
+                let px = pixels[(row as u32 * dw + col as u32) as usize];
+                let a = (px >> 24) as u8;
+                let i = y as usize * self.w + x as usize;
+                match a {
+                    0 => {}
+                    255 => self.buf[i] = px & 0xffffff,
+                    _ => self.buf[i] = blend(self.buf[i], px, a),
+                }
+            }
         }
     }
 
@@ -85,6 +125,38 @@ impl Canvas {
             }
         }
     }
+}
+
+/// Resamples by averaging the source pixels under each target pixel (premultiplied), which
+/// keeps downscaled photos smooth; upscaling degenerates to nearest-neighbour.
+fn resample(image: &Image, dw: u32, dh: u32) -> Vec<u32> {
+    let (sw, sh) = (image.stored_w as usize, image.stored_h as usize);
+    let mut out = Vec::with_capacity((dw * dh) as usize);
+    for oy in 0..dh as usize {
+        let y0 = oy * sh / dh as usize;
+        let y1 = (((oy + 1) * sh).div_ceil(dh as usize)).clamp(y0 + 1, sh);
+        for ox in 0..dw as usize {
+            let x0 = ox * sw / dw as usize;
+            let x1 = (((ox + 1) * sw).div_ceil(dw as usize)).clamp(x0 + 1, sw);
+            let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for sy in y0..y1 {
+                for &p in &image.pixels[sy * sw + x0..sy * sw + x1] {
+                    let pa = (p >> 24) as u64;
+                    r += ((p >> 16) & 0xff) as u64 * pa;
+                    g += ((p >> 8) & 0xff) as u64 * pa;
+                    b += (p & 0xff) as u64 * pa;
+                    a += pa;
+                    n += 1;
+                }
+            }
+            out.push(if a == 0 {
+                0
+            } else {
+                ((a / n) as u32) << 24 | ((r / a) as u32) << 16 | ((g / a) as u32) << 8 | (b / a) as u32
+            });
+        }
+    }
+    out
 }
 
 fn blend(dst: u32, src: u32, a: u8) -> u32 {
@@ -140,6 +212,12 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                 let sy = y + dy;
                 if sy < bottom && sy + h > top {
                     canvas.rect(*x, sy, *w, *h, *color);
+                }
+            }
+            Item::Image { x, y, w, h, image } => {
+                let sy = y + dy;
+                if sy < bottom && sy + h > top {
+                    canvas.image(*x, sy, *w, *h, image);
                 }
             }
             Item::Text { x, y, text, size, bold, color } => {

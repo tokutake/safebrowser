@@ -1,12 +1,13 @@
-//! DOM tree. There is no JavaScript, so it is read-only once built.
+//! DOM tree. It is built by the parser, optionally rewritten by scripts (see js.rs) before
+//! layout, and read-only afterwards.
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Node {
     Element(Element),
     Text(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Element {
     pub tag: String,
     pub attrs: Vec<(String, String)>,
@@ -47,6 +48,15 @@ impl Element {
     pub fn id(&self) -> usize {
         self as *const Element as usize
     }
+}
+
+/// The URL an <img> shows: `src`, else the first candidate of `srcset`.
+pub fn image_source(el: &Element) -> Option<&str> {
+    let src = el.attr("src").map(str::trim).filter(|s| !s.is_empty());
+    src.or_else(|| {
+        let first = el.attr("srcset")?.split(',').next()?;
+        first.split_ascii_whitespace().next()
+    })
 }
 
 fn collect_options<'a>(el: &'a Element, out: &mut Vec<&'a Element>) {

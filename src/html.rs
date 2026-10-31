@@ -4,7 +4,8 @@
 //! - No recursion; nesting depth (MAX_DEPTH) and node count (MAX_NODES) are capped,
 //!   so deeply nested markup cannot exhaust the stack.
 //! - Character reference lookahead is bounded, so input like "&&&&..." stays linear.
-//! - <script> and similar elements are dropped with their contents (no JavaScript here).
+//! - <template>, <svg>, <iframe> and similar elements are dropped with their contents.
+//! - <script> is kept as an element holding its source; js.rs decides whether and how to run it.
 
 use crate::dom::{Element, Node};
 
@@ -17,9 +18,9 @@ const VOID_TAGS: &[&str] = &[
     "track", "wbr",
 ];
 const RAW_TEXT_TAGS: &[&str] = &["script", "style", "title", "textarea"];
-/// Elements dropped together with their contents (scripts and embedded content).
+/// Elements dropped together with their contents (embedded content).
 const DROPPED_TAGS: &[&str] = &[
-    "script", "template", "svg", "math", "iframe", "object", "embed", "canvas", "video", "audio",
+    "template", "svg", "math", "iframe", "object", "embed", "canvas", "video", "audio",
     "frameset",
 ];
 /// Start tags that implicitly close an open <p>.
@@ -28,6 +29,14 @@ const P_CLOSERS: &[&str] = &[
     "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main",
     "nav", "ol", "p", "pre", "section", "table", "ul",
 ];
+
+/// Parses markup that is inserted into an existing element (`innerHTML`).
+pub fn parse_fragment(input: &str) -> Vec<Node> {
+    match parse(input) {
+        Node::Element(doc) => doc.children,
+        Node::Text(_) => Vec::new(),
+    }
+}
 
 pub fn parse(input: &str) -> Node {
     let mut tokenizer = Tokenizer::new(input);
@@ -286,7 +295,6 @@ impl Builder {
             return;
         }
         match self.top().tag.as_str() {
-            "script" => {}
             "title" | "textarea" => self.text(&decode_entities(&text)),
             _ => self.text(&text),
         }
@@ -391,11 +399,13 @@ mod tests {
     }
 
     #[test]
-    fn scripts_are_dropped() {
+    fn scripts_are_kept_with_their_source() {
         let doc = parse("<p>a<script>alert('x')</script>b</p>");
         let p = el(&el(&doc).children[0]);
-        assert_eq!(p.children.len(), 1);
-        assert!(matches!(&p.children[0], Node::Text(t) if t == "ab"));
+        assert_eq!(p.children.len(), 3);
+        let script = el(&p.children[1]);
+        assert_eq!(script.tag, "script");
+        assert!(matches!(&script.children[0], Node::Text(t) if t == "alert('x')"));
     }
 
     #[test]

@@ -3,9 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::dom::{Element, Node};
 use crate::font::Fonts;
+use crate::image::Image;
 use crate::style::{Align, AlignItems, Display, Float, GridLine, Position, GridPlacement, Justify, Len, MAX_GRID_TRACKS, Style, StyledNode, Track, TrackSize};
 
 #[derive(Clone)]
@@ -13,6 +15,7 @@ pub enum Item {
     Rect { x: f32, y: f32, w: f32, h: f32, color: u32 },
     /// y is the baseline.
     Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: u32 },
+    Image { x: f32, y: f32, w: f32, h: f32, image: Arc<Image> },
 }
 
 /// A clickable area of the page.
@@ -67,8 +70,9 @@ impl PageLayout {
 }
 
 /// `viewport_height` is used for `position: fixed` boxes anchored to the bottom.
-pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut Fonts) -> PageLayout {
+pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut Fonts, images: &Images) -> PageLayout {
     let mut layouter = Layouter {
+        images,
         out: PageLayout::default(),
         fonts,
         link: None,
@@ -142,6 +146,7 @@ enum WidgetKind {
     Button { label: String, target: Option<Target> },
     /// An inline-block laid out at the origin; moved into place when its line is flushed.
     Atomic(Box<(Vec<Item>, Vec<LinkBox>)>),
+    Image { image: Arc<Image>, target: Option<Target> },
 }
 
 struct Placed {
@@ -155,7 +160,11 @@ struct Placed {
     href: Option<Target>,
 }
 
+/// Decoded images by the URL the page refers to them with (see `dom::image_source`).
+pub type Images = HashMap<String, Arc<Image>>;
+
 struct Layouter<'f> {
+    images: &'f Images,
     out: PageLayout,
     fonts: &'f mut Fonts,
     /// Target of the enclosing <a> or <button>, so links wrapping block content stay clickable.
@@ -378,6 +387,20 @@ impl Layouter<'_> {
             return self.grid(sn, x, y, width);
         }
 
+        if let Node::Element(el) = sn.node {
+            if el.tag == "img" {
+                // A floated or block-level image
+                return match self.image_of(el) {
+                    Some(image) => {
+                        let (w, h) = self.image_size(&image, &sn.style, width);
+                        self.out.items.push(Item::Image { x, y, w, h, image });
+                        h
+                    }
+                    // Not loaded: its alt text is laid out like inline content
+                    None => self.inline(&[sn], x, y, width, sn.style.text_align),
+                };
+            }
+        }
         let ordered = sn.tag() == Some("ol");
         let mut counter = 0;
         let mut cy = y;
@@ -461,7 +484,13 @@ impl Layouter<'_> {
             Node::Element(el) => match el.tag.as_str() {
                 "br" => out.push(Frag::Break(style)),
                 "img" => {
-                    // Images are never fetched (avoids tracking pixels and decoder bugs); show alt text instead
+                    if let Some(image) = self.image_of(el) {
+                        let (w, h) = self.image_size(&image, &sn.style, self.inline_width);
+                        let min_w = if matches!(sn.style.width, Len::Percent(_)) { 0.0 } else { w };
+                        out.push(Frag::Widget(Widget { w, min_w, h, kind: WidgetKind::Image { image, target: href } }, style));
+                        return;
+                    }
+                    // Not loaded (or undecodable): show the alt text instead
                     let alt = el.attr("alt").unwrap_or("").trim();
                     let label = if alt.is_empty() { "[image]".to_string() } else { format!("[image: {alt}]") };
                     split_words(&label, &TextStyle { color: PLACEHOLDER_COLOR, ..style }, &href, out);
@@ -499,6 +528,42 @@ impl Layouter<'_> {
                 }
             },
         }
+    }
+
+    fn image_of(&self, el: &Element) -> Option<Arc<Image>> {
+        self.images.get(crate::dom::image_source(el)?).cloned()
+    }
+
+    /// Display size of an image: CSS or attribute sizes win, a missing side follows the
+    /// aspect ratio, and the result is shrunk to fit `avail` (or `max-width`).
+    fn image_size(&self, image: &Image, s: &Style, avail: f32) -> (f32, f32) {
+        let (nw, nh) = (image.width as f32, image.height as f32);
+        let avail = avail.max(1.0);
+        let wanted_w = match s.width {
+            Len::Px(w) => Some(w),
+            Len::Percent(p) => Some(avail * p / 100.0),
+            _ => None,
+        };
+        let wanted_h = match s.height {
+            Len::Px(h) => Some(h),
+            _ => None,
+        };
+        let (mut w, mut h) = match (wanted_w, wanted_h) {
+            (Some(w), Some(h)) => (w, h),
+            (Some(w), None) => (w, w * nh / nw),
+            (None, Some(h)) => (h * nw / nh, h),
+            (None, None) => (nw, nh),
+        };
+        let mut limit = avail;
+        if s.max_width != Len::Auto {
+            limit = limit.min(s.max_width.resolve(avail));
+        }
+        if !self.measuring && w > limit {
+            // An explicit height is kept only when the width was not the one being squeezed
+            h = if wanted_h.is_some() && wanted_w.is_none() { h } else { h * limit / w };
+            w = limit;
+        }
+        (w.max(1.0), h.max(1.0))
     }
 
     /// Places a float at the left or right edge, beside earlier floats, without advancing
@@ -966,6 +1031,14 @@ impl Layouter<'_> {
         if let (Node::Element(_), Len::Px(w)) = (sn.node, s.width) {
             return (w + frame, w + frame);
         }
+        if let Node::Element(el) = sn.node {
+            if el.tag == "img" && (sn.is_block() || sn.is_atomic_inline()) {
+                if let Some(image) = self.image_of(el) {
+                    let w = self.image_size(&image, s, f32::MAX).0;
+                    return (w + frame, w + frame);
+                }
+            }
+        }
         if s.display == Display::Table {
             let mut parts = Vec::new();
             table_parts(sn, &mut parts);
@@ -1243,6 +1316,12 @@ impl Layouter<'_> {
                 self.out.items.append(&mut items);
                 self.out.links.append(&mut links);
             }
+            WidgetKind::Image { image, target } => {
+                self.out.items.push(Item::Image { x, y, w, h, image });
+                if let Some(target) = target {
+                    self.out.links.push(LinkBox { x, y, w, h, target });
+                }
+            }
             WidgetKind::Button { label, target } => {
                 self.out.items.push(Item::Rect { x, y, w, h, color: 0x8f8f8f });
                 self.out.items.push(Item::Rect { x: x + 1.0, y: y + 1.0, w: w - 2.0, h: h - 2.0, color: 0xefefef });
@@ -1271,7 +1350,7 @@ impl Layouter<'_> {
             .iter()
             .map(|p| match &p.widget {
                 None => p.style.size * p.style.line_height,
-                Some(Widget { kind: WidgetKind::Atomic(_), h, .. }) => *h,
+                Some(Widget { kind: WidgetKind::Atomic(_) | WidgetKind::Image { .. }, h, .. }) => *h,
                 Some(w) => w.h + 4.0,
             })
             .fold(0.0, f32::max);
@@ -1486,7 +1565,7 @@ fn resolve_axis((start, end): GridPlacement, count: usize) -> (Option<usize>, us
 fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
     for item in items {
         match item {
-            Item::Rect { x, y, .. } | Item::Text { x, y, .. } => {
+            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -1602,7 +1681,7 @@ mod tests {
             .collect();
         let styled = crate::style::style_tree(&dom, &sheets, width).unwrap();
         let mut fonts = Fonts::load().unwrap();
-        layout(&styled, width, 600.0, &mut fonts)
+        layout(&styled, width, 600.0, &mut fonts, &Images::new())
     }
 
     pub(super) fn texts(layout: &PageLayout) -> Vec<(String, f32, f32)> {
@@ -1611,7 +1690,7 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 Item::Text { x, y, text, .. } => Some((text.clone(), *x, *y)),
-                Item::Rect { .. } => None,
+                Item::Rect { .. } | Item::Image { .. } => None,
             })
             .collect()
     }
@@ -1873,5 +1952,64 @@ mod inline_block_tests {
         let b = t.iter().find(|x| x.0 == "B").unwrap();
         assert_eq!(a.2, b.2);
         assert!(b.1 > a.1);
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::image::Image;
+
+    fn lay_out_with(html: &str, width: f32, w: u32, h: u32) -> PageLayout {
+        let dom = crate::html::parse(html);
+        let sheets: Vec<_> = crate::dom::doc_info(&dom)
+            .styles
+            .iter()
+            .filter_map(|s| match s {
+                crate::dom::StyleSource::Inline(css) => Some(crate::css::parse_stylesheet(css)),
+                crate::dom::StyleSource::External(_) => None,
+            })
+            .collect();
+        let styled = crate::style::style_tree(&dom, &sheets, width).unwrap();
+        let mut fonts = Fonts::load().unwrap();
+        let image = Arc::new(Image { width: w, height: h, stored_w: 1, stored_h: 1, pixels: vec![0xff00ff00] });
+        let images = Images::from([("a.png".to_string(), image)]);
+        layout(&styled, width, 600.0, &mut fonts, &images)
+    }
+
+    fn boxes(l: &PageLayout) -> Vec<(f32, f32, f32, f32)> {
+        l.items.iter().filter_map(|i| if let Item::Image { x, y, w, h, .. } = i { Some((*x, *y, *w, *h)) } else { None }).collect()
+    }
+
+    #[test]
+    fn images_use_their_natural_size_or_the_given_width() {
+        let l = lay_out_with(r#"<img src="a.png"><img src="a.png" width="50">"#, 800.0, 200, 100);
+        let b = boxes(&l);
+        assert_eq!((b[0].2, b[0].3), (200.0, 100.0));
+        assert_eq!((b[1].2, b[1].3), (50.0, 25.0));
+    }
+
+    #[test]
+    fn wide_images_shrink_to_the_page_keeping_their_ratio() {
+        let l = lay_out_with(r#"<img src="a.png">"#, 400.0, 1000, 500);
+        assert_eq!((boxes(&l)[0].2, boxes(&l)[0].3), (400.0, 200.0));
+    }
+
+    #[test]
+    fn block_images_and_missing_images() {
+        let l = lay_out_with(r#"<style>img{display:block}</style><img src="a.png"><img src="a.png"><img src="none.png" alt="gone">"#, 800.0, 100, 40);
+        let b = boxes(&l);
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[1].1 - b[0].1, 40.0, "block images stack");
+        let words: Vec<String> = super::tests::texts(&l).into_iter().map(|(t, ..)| t).collect();
+        assert_eq!(words.join(" "), "[image: gone]");
+    }
+
+    #[test]
+    fn linked_images_are_clickable() {
+        let l = lay_out_with(r#"<a href="/x"><img src="a.png"></a>"#, 800.0, 30, 30);
+        assert!(l.link_at(10.0, 10.0).is_some());
     }
 }

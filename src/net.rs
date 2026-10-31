@@ -11,7 +11,12 @@ use crate::policy;
 pub const MAX_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_CSS_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 10;
-const USER_AGENT: &str = "SafeBrowser/0.1 (no JavaScript)";
+pub const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_SCRIPT_BYTES: u64 = 2 * 1024 * 1024;
+const USER_AGENT: &str = "SafeBrowser/0.1";
+const ACCEPT_DOCUMENT: &str = "text/html,application/xhtml+xml,text/css;q=0.9,text/plain;q=0.8";
+pub const ACCEPT_IMAGE: &str = "image/png,image/jpeg,image/gif,image/webp,image/bmp;q=0.9";
+pub const ACCEPT_SCRIPT: &str = "application/javascript,text/javascript;q=0.9,*/*;q=0.1";
 
 pub struct Response {
     pub url: Url,
@@ -33,15 +38,24 @@ pub fn fetch(agent: &ureq::Agent, url: &Url, limit: u64) -> Result<Response, Str
     fetch_with_form(agent, url, None, limit)
 }
 
+/// Like `fetch`, but with an `Accept` header suited to subresources (images, scripts).
+pub fn fetch_accepting(agent: &ureq::Agent, url: &Url, limit: u64, accept: &str) -> Result<Response, String> {
+    fetch_request(agent, url, None, limit, accept)
+}
+
 /// Like `fetch`, but sends `form` as an urlencoded POST body on the first request.
 /// Redirects are followed with GET, as browsers do for 301/302/303.
 pub fn fetch_with_form(agent: &ureq::Agent, url: &Url, form: Option<&[(String, String)]>, limit: u64) -> Result<Response, String> {
+    fetch_request(agent, url, form, limit, ACCEPT_DOCUMENT)
+}
+
+fn fetch_request(agent: &ureq::Agent, url: &Url, form: Option<&[(String, String)]>, limit: u64, accept: &str) -> Result<Response, String> {
     let mut current = policy::check(url)?;
     let mut form = form;
     for _ in 0..=MAX_REDIRECTS {
         let request = agent
             .request_url(if form.is_some() { "POST" } else { "GET" }, &current)
-            .set("Accept", "text/html,application/xhtml+xml,text/css;q=0.9,text/plain;q=0.8")
+            .set("Accept", accept)
             .set("Accept-Language", "en-US,en;q=0.9");
         let result = match form.take() {
             Some(pairs) => {

@@ -1,4 +1,4 @@
-//! SafeBrowser: a browser written in Rust that does not run JavaScript.
+//! SafeBrowser: a browser written in Rust, with a sandboxed JavaScript interpreter and no unsafe code of its own.
 //! Unsafe code is forbidden throughout this crate.
 #![forbid(unsafe_code)]
 
@@ -7,6 +7,8 @@ mod dom;
 mod font;
 mod form;
 mod html;
+mod image;
+mod js;
 mod layout;
 mod loader;
 mod net;
@@ -194,7 +196,7 @@ impl App {
         let viewport_height = self.viewport_height();
         if let Some(page) = &mut self.page {
             page.layout = match style::style_tree(&page.doc.dom, &page.doc.sheets, width) {
-                Some(styled) => layout::layout(&styled, width, viewport_height, &mut self.fonts),
+                Some(styled) => layout::layout(&styled, width, viewport_height, &mut self.fonts, &page.doc.images),
                 None => PageLayout::default(),
             };
         }
@@ -462,7 +464,7 @@ impl App {
             (Some(hover), _, _) => hover.clone(),
             (None, Some(notice), _) => notice.clone(),
             (None, None, Some(_)) => "Loading…".to_string(),
-            (None, None, None) => "JavaScript: off · Cookies: off · Images: off".to_string(),
+            (None, None, None) => "JavaScript: sandboxed · Cookies: off · Images: on".to_string(),
         };
         self.canvas.set_clip(0.0, top, w - 8.0, h);
         self.canvas.text(&mut self.fonts, 8.0, top + 15.0, &text, UI_FONT - 1.0, false, 0x3c4043);

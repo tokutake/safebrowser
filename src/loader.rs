@@ -1,14 +1,25 @@
 //! Page fetching and parsing (runs on a background thread), plus internal pages.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use url::Url;
 
 use crate::css::{self, Stylesheet};
 use crate::form::Request;
 use crate::dom::{self, Node, StyleSource};
-use crate::{html, net};
+use crate::image::{self, Image};
+use crate::layout::Images;
+use crate::{html, js, net};
 
 const MAX_STYLESHEETS: usize = 32;
 const MAX_TOTAL_CSS_BYTES: usize = 10 * 1024 * 1024;
+const MAX_IMAGES: usize = 48;
+const MAX_TOTAL_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SCRIPTS: usize = 24;
+const MAX_TOTAL_SCRIPT_BYTES: usize = 6 * 1024 * 1024;
+/// Requests in flight at once for subresources.
+const PARALLEL_FETCHES: usize = 8;
 pub const HOME_URL: &str = "about:home";
 
 /// Connection state shown in the toolbar, based on what was actually received, not on the URL.
@@ -32,6 +43,7 @@ pub struct Loaded {
     pub dom: Node,
     pub sheets: Vec<Stylesheet>,
     pub title: String,
+    pub images: Images,
 }
 
 pub fn load(agent: &ureq::Agent, request: &Request) -> Loaded {
@@ -58,9 +70,12 @@ fn fetch_page(agent: &ureq::Agent, request: &Request) -> Result<Loaded, String> 
     Ok(from_html(resp.url, kind, &source, Some(agent)))
 }
 
-/// Parses HTML and fetches external stylesheets when an agent is given.
+/// Parses HTML, runs its scripts, and fetches external stylesheets and images when an agent is given.
 pub fn from_html(url: Url, kind: PageKind, source: &str, agent: Option<&ureq::Agent>) -> Loaded {
-    let dom = html::parse(source);
+    let mut dom = html::parse(source);
+    if let Some(agent) = agent {
+        dom = run_scripts(agent, &url, dom);
+    }
     let info = dom::doc_info(&dom);
     let base = info.base.as_deref().and_then(|b| url.join(b).ok()).unwrap_or_else(|| url.clone());
 
@@ -93,7 +108,99 @@ pub fn from_html(url: Url, kind: PageKind, source: &str, agent: Option<&ureq::Ag
         }
     }
     let title = if info.title.is_empty() { url.to_string() } else { info.title };
-    Loaded { url, kind, base, dom, sheets, title }
+    let images = fetch_images(agent, &base, &dom);
+    Loaded { url, kind, base, dom, sheets, title, images }
+}
+
+/// Executes the page's scripts (see js.rs). Script files are fetched first, in parallel.
+fn run_scripts(agent: &ureq::Agent, url: &Url, dom: Node) -> Node {
+    let base = dom::doc_info(&dom).base.as_deref().and_then(|b| url.join(b).ok()).unwrap_or_else(|| url.clone());
+    let mut srcs = js::external_sources(&dom);
+    srcs.truncate(MAX_SCRIPTS);
+    let urls: Vec<Option<Url>> = srcs.iter().map(|src| base.join(src).ok()).collect();
+    let bodies = fetch_all(&urls, |u| {
+        let resp = net::fetch_accepting(agent, u, net::MAX_SCRIPT_BYTES, net::ACCEPT_SCRIPT).ok()?;
+        Some(net::decode_text(&resp.body, resp.charset.as_deref(), false))
+    });
+    let mut total = 0;
+    let mut external = HashMap::new();
+    for (src, body) in srcs.into_iter().zip(bodies) {
+        if let Some(body) = body {
+            total += body.len();
+            if total <= MAX_TOTAL_SCRIPT_BYTES {
+                external.insert(src, body);
+            }
+        }
+    }
+    js::run(dom, &base, external)
+}
+
+/// Fetches every distinct <img> source (data: URLs are decoded in place). Failures are
+/// ignored: the image just shows its alt text.
+fn fetch_images(agent: Option<&ureq::Agent>, base: &Url, dom: &Node) -> Images {
+    let mut sources = Vec::new();
+    collect_image_sources(dom, &mut sources);
+    let mut images = Images::new();
+    let mut remote: Vec<(String, Option<Url>)> = Vec::new();
+    for src in sources {
+        if images.contains_key(&src) || remote.iter().any(|(s, _)| *s == src) {
+            continue;
+        }
+        if src.starts_with("data:") {
+            if let Some(img) = image::decode_data_url(&src) {
+                images.insert(src, Arc::new(img));
+            }
+        } else if agent.is_some() && remote.len() < MAX_IMAGES {
+            let resolved = base.join(&src).ok();
+            remote.push((src, resolved));
+        }
+    }
+    let Some(agent) = agent else { return images };
+    let urls: Vec<Option<Url>> = remote.iter().map(|(_, u)| u.clone()).collect();
+    let decoded: Vec<Option<Image>> = fetch_all(&urls, |u| {
+        let resp = net::fetch_accepting(agent, u, net::MAX_IMAGE_BYTES, net::ACCEPT_IMAGE).ok()?;
+        image::decode(&resp.body).map(|img| (img, resp.body.len()))
+    })
+    .into_iter()
+    .scan(0usize, |total, r| {
+        // Past the byte budget the remaining images are dropped
+        Some(r.and_then(|(img, bytes)| {
+            *total += bytes;
+            (*total <= MAX_TOTAL_IMAGE_BYTES).then_some(img)
+        }))
+    })
+    .collect();
+    for ((src, _), img) in remote.into_iter().zip(decoded) {
+        if let Some(img) = img {
+            images.insert(src, Arc::new(img));
+        }
+    }
+    images
+}
+
+fn collect_image_sources(node: &Node, out: &mut Vec<String>) {
+    let Node::Element(el) = node else { return };
+    if el.tag == "img" {
+        if let Some(src) = dom::image_source(el) {
+            out.push(src.to_string());
+        }
+    }
+    for child in &el.children {
+        collect_image_sources(child, out);
+    }
+}
+
+/// Runs `job` for each URL, `PARALLEL_FETCHES` at a time, keeping the order of `urls`.
+fn fetch_all<T: Send>(urls: &[Option<Url>], job: impl Fn(&Url) -> Option<T> + Sync) -> Vec<Option<T>> {
+    let mut results = Vec::with_capacity(urls.len());
+    for chunk in urls.chunks(PARALLEL_FETCHES) {
+        let job = &job;
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk.iter().map(|u| scope.spawn(move || job(u.as_ref()?))).collect();
+            results.extend(handles.into_iter().map(|h| h.join().ok().flatten()));
+        });
+    }
+    results
 }
 
 /// Fetches stylesheets in parallel. Failures are ignored (the page is usable without them),
@@ -135,14 +242,14 @@ pub fn error_page(url: &Url, message: &str) -> Loaded {
 pub fn home_page() -> Loaded {
     let body = r#"
 <h1>SafeBrowser</h1>
-<p>A browser written from scratch in Rust that does not run JavaScript.</p>
+<p>A browser written from scratch in Rust, with a sandboxed JavaScript interpreter.</p>
 <h2>Security by design</h2>
 <ul>
 <li>The engine is written in Rust with unsafe code forbidden (memory safe)</li>
-<li>No JavaScript: scripts are discarded while parsing</li>
+<li>JavaScript runs once while the page loads, with no network, cookies or navigation available to scripts</li>
 <li>HTTPS only: http:// is upgraded to https:// automatically</li>
 <li>No cookies are stored or sent, and no Referer is sent</li>
-<li>Images are never loaded (no tracking pixels); alt text is shown instead</li>
+<li>Images (PNG, JPEG, GIF, WebP, BMP) are fetched over HTTPS without cookies or Referer, decoded with size limits, and alt text is shown when they fail</li>
 <li>No downloads</li>
 <li>Hover a link to see its real destination in the status bar</li>
 <li>Internationalized domains are shown in xn-- form, so lookalikes stand out</li>
