@@ -18,6 +18,7 @@ cargo test -- --ignored   # end-to-end tests against real sites (needs network)
 | --- | --- |
 | Address bar | ⌘L or click; ⌘⌫ clears, ⌘V pastes |
 | Page text fields | click to focus, type, ⌘V pastes, Enter submits, Esc leaves |
+| Checkboxes / radios / selects | click to toggle; a select steps to its next option |
 | Back / forward | ⌘[ / ⌘] |
 | Reload | ⌘R |
 | Scroll | wheel, arrow keys, Space, PageUp/PageDown, Home/End |
@@ -84,7 +85,7 @@ cargo test -- --ignored   # end-to-end tests against real sites (needs network)
   - `::before` / `::after` with string, `attr()` and quote content (icon-font glyphs are dropped)
 - **Selectors**: type, class, ID, attribute (`=`, `~=`, `|=`, `^=`, `$=`, `*=`, `i` flag), all four combinators, structural pseudo-classes (`:first-child`, `:nth-child()`, `*-of-type`, `:empty`, ...), `:not()` / `:is()` / `:where()`, `:checked` / `:disabled`, and escaped class names. Interaction and history states (`:hover`, `:focus`, `:visited`, ...) never match.
   - media queries are evaluated against the real window width, so layouts switch as it is resized
-- **Not supported yet**: text selection inside fields, toggling checkboxes/selects, `z-index`, `overflow` clipping, `bottom` inside non-root containing blocks (falls back to the static position), complex selectors inside `:not()`/`:is()`, `:has()`, SVG, `<canvas>`, CSS `background-image`, IME input, text selection, tabs.
+- **Not supported yet**: text selection inside fields, a drop-down list for selects (clicking cycles through the options), `z-index`, `overflow` clipping, `bottom` inside non-root containing blocks (falls back to the static position), complex selectors inside `:not()`/`:is()`, `:has()`, SVG, `<canvas>`, CSS `background-image`, IME input, text selection, tabs.
 - **Dependencies are not unsafe-free**:
   - minifb calls the macOS windowing APIs.
   - fontdue uses SIMD.

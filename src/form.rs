@@ -56,6 +56,30 @@ fn build(form: &Element, base: &Url, control: usize, values: &HashMap<usize, Str
     Ok(Request::Get(url))
 }
 
+/// The ids of the radio buttons that share a name (and form) with the radio `id`, including itself.
+pub fn radio_group(dom: &Node, id: usize) -> Vec<usize> {
+    let mut ancestors = Vec::new();
+    let Some(radio) = find(dom, id, &mut ancestors) else { return vec![id] };
+    let Some(name) = radio.attr("name").filter(|n| !n.is_empty()) else { return vec![id] };
+    let scope: &Element = ancestors.iter().rev().find(|e| e.tag == "form").copied().unwrap_or(match dom {
+        Node::Element(root) => root,
+        _ => return vec![id],
+    });
+    let mut out = Vec::new();
+    gather_radios(scope, name, &mut out);
+    out
+}
+
+fn gather_radios(el: &Element, name: &str, out: &mut Vec<usize>) {
+    for child in &el.children {
+        let Node::Element(c) = child else { continue };
+        if c.tag == "input" && c.attr("type").is_some_and(|t| t.trim().eq_ignore_ascii_case("radio")) && c.attr("name") == Some(name) {
+            out.push(c.id());
+        }
+        gather_radios(c, name, out);
+    }
+}
+
 /// Finds the element with `id`, leaving its ancestors (root first) in `path`.
 fn find<'a>(node: &'a Node, id: usize, path: &mut Vec<&'a Element>) -> Option<&'a Element> {
     let Node::Element(el) = node else { return None };
@@ -87,7 +111,8 @@ fn collect(el: &Element, control: usize, values: &HashMap<usize, String>, out: &
                             return Err("This form has a password field. SafeBrowser does not send passwords (it has no cookies, so logins cannot work).".into());
                         }
                         "checkbox" | "radio" => {
-                            if let (Some(name), Some(_)) = (name, c.attr("checked")) {
+                            let checked = values.get(&c.id()).map_or(c.attr("checked").is_some(), |v| v == "1");
+                            if let (Some(name), true) = (name, checked) {
                                 out.push((name, c.attr("value").unwrap_or("on").to_string()));
                             }
                         }
@@ -111,7 +136,9 @@ fn collect(el: &Element, control: usize, values: &HashMap<usize, String>, out: &
                     }
                 }
                 "select" => {
-                    if let (Some(name), Some(option)) = (name, c.selected_option()) {
+                    let options = c.options();
+                    let chosen = values.get(&c.id()).and_then(|v| v.parse::<usize>().ok()).and_then(|i| options.get(i).copied());
+                    if let (Some(name), Some(option)) = (name, chosen.or_else(|| c.selected_option())) {
                         out.push((name, option.option_value()));
                     }
                 }
@@ -165,6 +192,27 @@ mod tests {
         // Pressing Enter in the field submits without the button's name
         let req = submit(&dom, &base(), q, &values).unwrap().unwrap();
         assert!(!req.url().as_str().contains("go="));
+    }
+
+    #[test]
+    fn toggled_controls_override_defaults() {
+        let dom = html::parse(
+            "<form action=/s><input type=checkbox name=a checked><input type=checkbox name=b>
+             <input type=radio name=r value=1 checked><input type=radio name=r value=2>
+             <select name=n><option value=1>one<option value=2 selected>two</select><input type=submit name=go></form>",
+        );
+        let a = element_by_name(&dom, "a").unwrap().id();
+        let b = element_by_name(&dom, "b").unwrap().id();
+        let n = element_by_name(&dom, "n").unwrap().id();
+        let go = element_by_name(&dom, "go").unwrap().id();
+        let r1 = element_by_name(&dom, "r").unwrap().id();
+        let group = radio_group(&dom, r1);
+        assert_eq!(group.len(), 2);
+        let mut values = HashMap::from([(a, "0".to_string()), (b, "1".to_string()), (n, "0".to_string())]);
+        values.insert(group[0], "0".into());
+        values.insert(group[1], "1".into());
+        let req = submit(&dom, &base(), go, &values).unwrap().unwrap();
+        assert_eq!(req.url().query(), Some("b=on&r=2&n=1&go="));
     }
 
     #[test]

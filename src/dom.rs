@@ -39,6 +39,13 @@ impl Element {
         options.iter().find(|o| o.attr("selected").is_some()).or(options.first()).copied()
     }
 
+    /// For a <select>: all its options in document order.
+    pub fn options(&self) -> Vec<&Element> {
+        let mut options = Vec::new();
+        collect_options(self, &mut options);
+        options
+    }
+
     /// The value an <option> submits: its `value` attribute, else its text.
     pub fn option_value(&self) -> String {
         self.attr("value").map_or_else(|| self.text().trim().to_string(), str::to_string)

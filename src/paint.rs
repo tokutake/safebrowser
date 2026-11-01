@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::font::Fonts;
 use crate::image::Image;
-use crate::layout::{Item, PageLayout, Target};
+use crate::layout::{ControlKind, Item, PageLayout, Target};
 
 pub struct Canvas {
     pub w: usize,
@@ -174,11 +174,35 @@ fn blend(dst: u32, src: u32, a: u8) -> u32 {
 pub fn paint_fields(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, dy: f32, top: f32, bottom: f32, values: &HashMap<usize, String>, focused: Option<usize>) {
     let width = canvas.w as f32;
     for link in &layout.links {
-        let Target::Field(field) = &link.target else { continue };
         let (x, y, w, h) = (link.x, link.y + dy, link.w, link.h);
         if y > bottom || y + h < top {
             continue;
         }
+        if let Target::Control(control) = &link.target {
+            let state = values.get(&control.id).and_then(|v| v.parse::<usize>().ok()).unwrap_or(control.initial);
+            match &control.kind {
+                ControlKind::Checkbox | ControlKind::Radio => {
+                    let radio = control.kind == ControlKind::Radio;
+                    canvas.rect(x, y, w, h, 0x8f8f8f);
+                    canvas.rect(x + 1.0, y + 1.0, w - 2.0, h - 2.0, 0xffffff);
+                    if state == 1 {
+                        let inset = if radio { w * 0.3 } else { w * 0.22 };
+                        canvas.rect(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset, 0x0b57d0);
+                    }
+                }
+                ControlKind::Select(labels) => {
+                    canvas.rect(x, y, w, h, 0x8f8f8f);
+                    canvas.rect(x + 1.0, y + 1.0, w - 2.0, h - 2.0, 0xefefef);
+                    let label = labels.get(state).map(String::as_str).unwrap_or("");
+                    canvas.set_clip(x.max(0.0) + 2.0, y.max(top), (x + w - 18.0).min(width), (y + h).min(bottom));
+                    canvas.text(fonts, x + 8.0, y + (h - control.size) / 2.0 + control.size * 0.85, label, control.size, false, control.color);
+                    canvas.set_clip(0.0, top, width, bottom);
+                    canvas.text(fonts, x + w - 16.0, y + (h - control.size) / 2.0 + control.size * 0.85, "▼", control.size * 0.7, false, 0x5f6368);
+                }
+            }
+            continue;
+        }
+        let Target::Field(field) = &link.target else { continue };
         let is_focused = focused == Some(field.id);
         canvas.rect(x, y, w, h, if is_focused { 0x0b57d0 } else { 0x8f8f8f });
         canvas.rect(x + 1.0, y + 1.0, w - 2.0, h - 2.0, 0xffffff);
