@@ -269,7 +269,7 @@ impl App {
                 None => format!("Invalid link: {href}"),
             }),
             Target::Submit(_) => Some("Submit form".to_string()),
-            Target::Field(_) => None,
+            Target::Field(_) | Target::Control(_) => None,
         });
         if hover != self.hover {
             self.hover = hover;
@@ -304,7 +304,30 @@ impl App {
                 self.fields.entry(field.id).or_insert_with(|| field.initial.clone());
                 self.focused = Some(field);
             }
+            Some(Target::Control(control)) => self.toggle(&control),
             None => {}
+        }
+    }
+
+    /// Changes a checkbox, radio button or select box. A select steps to its next option.
+    fn toggle(&mut self, control: &layout::Control) {
+        let current = self.fields.get(&control.id).and_then(|v| v.parse::<usize>().ok()).unwrap_or(control.initial);
+        match &control.kind {
+            layout::ControlKind::Checkbox => {
+                self.fields.insert(control.id, (1 - current.min(1)).to_string());
+            }
+            layout::ControlKind::Radio => {
+                if let Some(page) = &self.page {
+                    for id in form::radio_group(&page.doc.dom, control.id) {
+                        self.fields.insert(id, "0".into());
+                    }
+                }
+                self.fields.insert(control.id, "1".into());
+            }
+            layout::ControlKind::Select(labels) if !labels.is_empty() => {
+                self.fields.insert(control.id, ((current + 1) % labels.len()).to_string());
+            }
+            layout::ControlKind::Select(_) => {}
         }
     }
 

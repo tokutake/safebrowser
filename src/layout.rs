@@ -35,6 +35,27 @@ pub enum Target {
     Submit(usize),
     /// A text field. The chrome draws it with the user's input on top of the layout.
     Field(Rc<Field>),
+    /// A checkbox, radio button or select box; clicking changes its state.
+    Control(Rc<Control>),
+}
+
+#[derive(PartialEq, Debug)]
+pub enum ControlKind {
+    Checkbox,
+    Radio,
+    /// Option labels
+    Select(Vec<String>),
+}
+
+#[derive(PartialEq, Debug)]
+pub struct Control {
+    /// `Element::id` of the <input> / <select>
+    pub id: usize,
+    pub kind: ControlKind,
+    /// Initial state: 1 when checked, or the selected option's index.
+    pub initial: usize,
+    pub size: f32,
+    pub color: u32,
 }
 
 #[derive(PartialEq, Debug)]
@@ -142,6 +163,7 @@ struct Widget {
 #[derive(Clone)]
 enum WidgetKind {
     Field(Rc<Field>),
+    Control(Rc<Control>),
     /// A button or select box with a fixed label; clickable when `target` is set.
     Button { label: String, target: Option<Target> },
     /// An inline-block laid out at the origin; moved into place when its line is flushed.
@@ -500,8 +522,12 @@ impl Layouter<'_> {
                     let checked = el.attr("checked").is_some();
                     match kind.as_str() {
                         "hidden" => {}
-                        "checkbox" => split_words(if checked { "■" } else { "□" }, &style, &href, out),
-                        "radio" => split_words(if checked { "●" } else { "○" }, &style, &href, out),
+                        "checkbox" | "radio" => {
+                            let kind = if kind == "radio" { ControlKind::Radio } else { ControlKind::Checkbox };
+                            let side = (style.size * 1.0).round().max(10.0);
+                            let control = Control { id: el.id(), kind, initial: checked as usize, size: side, color: sn.style.color };
+                            out.push(Frag::Widget(Widget { w: side, min_w: side, h: side, kind: WidgetKind::Control(Rc::new(control)) }, style));
+                        }
                         "submit" | "image" | "button" | "reset" => {
                             let default = if kind == "reset" { "Reset" } else { "Submit" };
                             let target = matches!(kind.as_str(), "submit" | "image").then(|| Target::Submit(el.id()));
@@ -517,8 +543,14 @@ impl Layouter<'_> {
                     out.push(self.text_field(el, &sn.style, rows, false));
                 }
                 "select" => {
-                    let label = el.selected_option().map(|o| o.text().trim().to_string()).unwrap_or_default();
-                    out.push(self.button(format!("{label} ▼"), None, style));
+                    let options = el.options();
+                    let labels: Vec<String> = options.iter().map(|o| o.text().trim().to_string()).collect();
+                    let initial = el.selected_option().and_then(|s| options.iter().position(|o| std::ptr::eq(*o, s))).unwrap_or(0);
+                    let widest = labels.iter().map(|l| self.fonts.measure(l, style.size, false)).fold(0.0, f32::max);
+                    let w = widest + 32.0;
+                    let h = style.size * 1.4 + 6.0;
+                    let control = Control { id: el.id(), kind: ControlKind::Select(labels), initial, size: style.size, color: 0x202124 };
+                    out.push(Frag::Widget(Widget { w, min_w: w, h, kind: WidgetKind::Control(Rc::new(control)) }, style));
                 }
                 _ => {
                     let href = element_target(el).or(href);
@@ -1309,6 +1341,7 @@ impl Layouter<'_> {
         let (w, h) = (widget.w, widget.h);
         match widget.kind {
             WidgetKind::Field(field) => self.out.links.push(LinkBox { x, y, w, h, target: Target::Field(field) }),
+            WidgetKind::Control(control) => self.out.links.push(LinkBox { x, y, w, h, target: Target::Control(control) }),
             WidgetKind::Atomic(content) => {
                 let (mut items, mut links) = *content;
                 offset_items(&mut items, x, y);
