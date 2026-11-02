@@ -209,6 +209,8 @@ pub struct Style {
     /// line as a single box.
     pub inline_level: bool,
     pub position: Position,
+    /// `overflow` other than `visible`: content is clipped to the padding box.
+    pub clip_overflow: bool,
     /// `top`, `right`, `bottom`, `left`
     pub inset: [Len; 4],
     /// `clear`: (left, right)
@@ -258,6 +260,7 @@ impl Style {
             float: Float::None,
             inline_level: false,
             position: Position::Static,
+            clip_overflow: false,
             inset: [Len::Auto; 4],
             clear: (false, false),
             content: None,
@@ -297,6 +300,7 @@ impl Style {
             float: Float::None,
             inline_level: false,
             position: Position::Static,
+            clip_overflow: false,
             inset: [Len::Auto; 4],
             clear: (false, false),
             content: None,
@@ -774,6 +778,10 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
         "flex-shrink" => s.flex_shrink = v.parse::<f32>().ok().filter(|n| n.is_finite()).map_or(s.flex_shrink, |n| n.max(0.0)),
         "flex-basis" => s.flex_basis = if v == "content" { Len::Auto } else { parse_length(v, s.font_size).unwrap_or(s.flex_basis) },
         "flex" => apply_flex_shorthand(s, v),
+        "overflow" | "overflow-x" | "overflow-y" => {
+            // The shorthand may carry two values; clip when either axis is not visible
+            s.clip_overflow = v.split_whitespace().any(|w| matches!(w, "hidden" | "clip" | "scroll" | "auto"));
+        }
         "position" => {
             s.position = match v {
                 "relative" | "sticky" | "-webkit-sticky" => Position::Relative,
