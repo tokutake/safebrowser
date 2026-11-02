@@ -35,6 +35,14 @@ impl Canvas {
         ];
     }
 
+    pub fn clip(&self) -> [i32; 4] {
+        self.clip
+    }
+
+    pub fn restore_clip(&mut self, clip: [i32; 4]) {
+        self.clip = clip;
+    }
+
     pub fn reset_clip(&mut self) {
         self.clip = [0, 0, self.w as i32, self.h as i32];
     }
@@ -230,8 +238,23 @@ pub fn paint_fields(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout,
 
 /// Paints the page. `dy` is the vertical offset from page to screen coordinates.
 pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, dy: f32, top: f32, bottom: f32) {
+    let base = canvas.clip();
+    let mut stack: Vec<[i32; 4]> = Vec::new();
     for item in &layout.items {
         match item {
+            Item::PushClip { x, y, w, h } => {
+                let cur = canvas.clip();
+                stack.push(cur);
+                let r = [x.round() as i32, (y + dy).round() as i32, (x + w).round() as i32, (y + dy + h).round() as i32];
+                let c = [r[0].max(cur[0]), r[1].max(cur[1]), r[2].min(cur[2]), r[3].min(cur[3])];
+                // An empty intersection must stay empty (x1 >= x0 checks reject it)
+                canvas.restore_clip([c[0], c[1], c[2].max(c[0]), c[3].max(c[1])]);
+            }
+            Item::PopClip => {
+                if let Some(prev) = stack.pop() {
+                    canvas.restore_clip(prev);
+                }
+            }
             Item::Rect { x, y, w, h, color } => {
                 let sy = y + dy;
                 if sy < bottom && sy + h > top {
@@ -252,4 +275,5 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
             }
         }
     }
+    canvas.restore_clip(base);
 }

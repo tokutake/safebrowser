@@ -16,6 +16,9 @@ pub enum Item {
     /// y is the baseline.
     Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: u32 },
     Image { x: f32, y: f32, w: f32, h: f32, image: Arc<Image> },
+    /// Starts clipping to a box (`overflow: hidden`); nests with `PopClip`.
+    PushClip { x: f32, y: f32, w: f32, h: f32 },
+    PopClip,
 }
 
 /// A clickable area of the page.
@@ -355,13 +358,26 @@ impl Layouter<'_> {
                 h: None,
             });
         }
+        let clip_slot = s.clip_overflow.then(|| {
+            self.out.items.push(Item::PushClip { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+            self.out.items.len() - 1
+        });
         let content_h = self.children(sn, content_x, content_y, width);
         if positioned {
             self.containing_blocks.pop();
         }
         self.link = saved_link;
         let outer_w = width + frame;
+        // A fixed height only matters when content is clipped to it
+        let content_h = match s.height {
+            Len::Px(h) if s.clip_overflow && sizing == Sizing::Flow => h.max(0.0),
+            _ => content_h,
+        };
         let height = bt + pt + content_h + pb + bb;
+        if let Some(slot) = clip_slot {
+            self.out.items[slot] = Item::PushClip { x: left + bl, y: top + bt, w: outer_w - bl - br, h: height - bt - bb };
+            self.out.items.push(Item::PopClip);
+        }
 
         if let (Some(slot), Some(color)) = (bg_slot, background) {
             self.out.items[slot] = Item::Rect { x: left, y: top, w: outer_w, h: height, color };
@@ -1598,10 +1614,11 @@ fn resolve_axis((start, end): GridPlacement, count: usize) -> (Option<usize>, us
 fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
     for item in items {
         match item {
-            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } => {
+            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } | Item::PushClip { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
+            Item::PopClip => {}
         }
     }
 }
@@ -1723,9 +1740,19 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 Item::Text { x, y, text, .. } => Some((text.clone(), *x, *y)),
-                Item::Rect { .. } | Item::Image { .. } => None,
+                _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn overflow_hidden_emits_a_clip_around_the_content() {
+        let l = lay_out("<div style='overflow:hidden;height:20px;width:100px'><p>one</p><p>two</p></div><p>after</p>", 400.0);
+        let push = l.items.iter().position(|i| matches!(i, Item::PushClip { .. })).expect("clip");
+        let pop = l.items.iter().position(|i| matches!(i, Item::PopClip)).expect("pop");
+        assert!(push < pop);
+        let Item::PushClip { w, h, .. } = l.items[push] else { unreachable!() };
+        assert_eq!((w, h), (100.0, 20.0));
     }
 
     #[test]
