@@ -176,6 +176,32 @@ pub fn parse_declarations(block: &str) -> Vec<Declaration> {
         .collect()
 }
 
+/// The first `url(...)` in a value, without quotes.
+pub fn extract_url(v: &str) -> Option<String> {
+    let start = v.find("url(")? + 4;
+    let rest = &v[start..];
+    let end = match rest.trim_start().chars().next()? {
+        q @ ('"' | '\'') => {
+            let t = rest.trim_start();
+            return Some(t[1..1 + t[1..].find(q)?].to_string());
+        }
+        _ => rest.find(')')?,
+    };
+    let url = rest[..end].trim();
+    (!url.is_empty()).then(|| url.to_string())
+}
+
+/// Every `background` image URL named by the declarations of a stylesheet or style attribute.
+pub fn background_urls(decls: &[Declaration], out: &mut Vec<String>) {
+    for d in decls {
+        if matches!(d.name.as_str(), "background" | "background-image") {
+            if let Some(u) = extract_url(&d.value) {
+                out.push(u);
+            }
+        }
+    }
+}
+
 /// Splits on separators outside parentheses and quotes.
 pub fn split_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
@@ -246,6 +272,14 @@ pub fn parse_length(v: &str, em_base: f32) -> Option<crate::style::Len> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn urls_in_backgrounds() {
+        assert_eq!(extract_url("url(a.png) no-repeat").as_deref(), Some("a.png"));
+        assert_eq!(extract_url("red url( 'b c.png' )").as_deref(), Some("b c.png"));
+        assert_eq!(extract_url("url(\"x.png\")").as_deref(), Some("x.png"));
+        assert_eq!(extract_url("none"), None);
+    }
+
     use super::*;
 
     #[test]
