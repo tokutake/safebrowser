@@ -267,6 +267,38 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                     canvas.image(*x, sy, *w, *h, image);
                 }
             }
+            Item::BgImage { x, y, w, h, tile_w, tile_h, ox, oy, repeat, image } => {
+                let sy = y + dy;
+                if sy < bottom && sy + h > top {
+                    let cur = canvas.clip();
+                    let r = [x.round() as i32, sy.round() as i32, (x + w).round() as i32, (sy + h).round() as i32];
+                    let c = [r[0].max(cur[0]), r[1].max(cur[1]), r[2].min(cur[2]), r[3].min(cur[3])];
+                    if c[0] < c[2] && c[1] < c[3] {
+                        canvas.restore_clip(c);
+                        // Tiles start at the offset and, when repeating, extend back over the box
+                        let first = |o: f32, t: f32| if *repeat { o - (o / t).ceil() * t } else { o };
+                        let (x0, y0) = (first(*ox, *tile_w), first(*oy, *tile_h));
+                        let mut ty = y0;
+                        let mut count = 0;
+                        while ty < *h && count < 4096 {
+                            let mut tx = x0;
+                            while tx < *w && count < 4096 {
+                                canvas.image(x + tx, sy + ty, *tile_w, *tile_h, image);
+                                count += 1;
+                                if !*repeat {
+                                    break;
+                                }
+                                tx += tile_w;
+                            }
+                            if !*repeat {
+                                break;
+                            }
+                            ty += tile_h;
+                        }
+                        canvas.restore_clip(cur);
+                    }
+                }
+            }
             Item::Text { x, y, text, size, bold, color } => {
                 let sy = y + dy;
                 if sy - size < bottom && sy + size * 0.4 > top {

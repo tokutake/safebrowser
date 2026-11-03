@@ -165,11 +165,28 @@ impl Len {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BgSize {
+    Auto,
+    Cover,
+    Contain,
+    /// `100% 100%` (or `100%`, which keeps the ratio)
+    Stretch,
+    /// Width and optional height in px
+    Px(f32, Option<f32>),
+}
+
 #[derive(Clone)]
 pub struct Style {
     pub display: Display,
     pub color: u32,
     pub background: Option<u32>,
+    /// `background-image: url(...)`, as written (looked up in the page's image table).
+    pub bg_image: Option<Rc<str>>,
+    pub bg_size: BgSize,
+    pub bg_repeat: bool,
+    /// Image position as fractions of the free space (x, y).
+    pub bg_pos: (f32, f32),
     pub font_size: f32,
     pub bold: bool,
     pub underline: bool,
@@ -226,6 +243,10 @@ impl Style {
             display: Display::Block,
             color: 0x1f1f1f,
             background: None,
+            bg_image: None,
+            bg_size: BgSize::Auto,
+            bg_repeat: true,
+            bg_pos: (0.0, 0.0),
             font_size: 16.0,
             bold: false,
             underline: false,
@@ -273,6 +294,10 @@ impl Style {
         Style {
             display: Display::Inline,
             background: None,
+            bg_image: None,
+            bg_size: BgSize::Auto,
+            bg_repeat: true,
+            bg_pos: (0.0, 0.0),
             margin: [Len::Px(0.0); 4],
             padding: [Len::Px(0.0); 4],
             border_width: [0.0; 4],
@@ -547,6 +572,10 @@ fn cascade(style: &mut Style, parent: &Style, entries: &[Entry], inline: &[Decla
                 style.content = Some(v);
             } else {
                 apply(style, parent, &d.name, &v.to_ascii_lowercase());
+                if matches!(d.name.as_str(), "background" | "background-image") {
+                    // URLs are case-sensitive, so they come from the original value
+                    style.bg_image = crate::css::extract_url(&v).map(Rc::from);
+                }
             }
         }
     }
@@ -672,12 +701,39 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
             }
         }
         "background-color" | "background" => {
+            if name == "background" {
+                // The shorthand resets the image properties, then sets what it names
+                s.bg_image = None;
+                s.bg_size = BgSize::Auto;
+                s.bg_repeat = true;
+                s.bg_pos = (0.0, 0.0);
+                let (pos, size) = match v.split_once('/') {
+                    Some((a, b)) => (a, Some(b)),
+                    None => (v, None),
+                };
+                if let Some(size) = size {
+                    let size = size.rsplit_once(')').map_or(size, |(_, r)| r);
+                    s.bg_size = parse_bg_size(size.trim(), s.font_size);
+                }
+                let tokens: Vec<&str> = split_top_level(pos, ' ').into_iter().filter(|t| !t.starts_with("url(")).collect();
+                if tokens.iter().any(|t| t.starts_with("no-repeat")) {
+                    s.bg_repeat = false;
+                }
+                let place: Vec<&str> = tokens.iter().copied().filter(|t| matches!(*t, "left" | "right" | "top" | "bottom" | "center") || t.ends_with('%')).collect();
+                if !place.is_empty() {
+                    s.bg_pos = parse_bg_pos(&place.join(" "));
+                }
+            }
             if v == "none" || v == "transparent" {
                 s.background = None;
-            } else if let Some(c) = split_top_level(v, ' ').into_iter().find_map(|t| parse_color(t, s.color)) {
+            } else if let Some(c) = split_top_level(v, ' ').into_iter().filter(|t| !t.starts_with("url(")).find_map(|t| parse_color(t, s.color)) {
                 s.background = if c.1 > 0.05 { Some(blend_on_white(c.0, c.1)) } else { None };
             }
         }
+        "background-image" => s.bg_image = None, // the URL keeps its case, see `cascade`
+        "background-size" => s.bg_size = parse_bg_size(v, s.font_size),
+        "background-repeat" => s.bg_repeat = !v.starts_with("no-repeat"),
+        "background-position" => s.bg_pos = parse_bg_pos(v),
         "font-weight" => s.bold = parse_bold(v).unwrap_or(s.bold),
         "font" => {
             for token in split_top_level(v, ' ') {
@@ -890,6 +946,39 @@ fn apply_presentational_hints(el: &Element, s: &mut Style, parent: &Style) {
         if let Some(color) = attr("color") {
             apply(s, parent, "color", &color);
         }
+    }
+}
+
+fn parse_bg_size(v: &str, font_size: f32) -> BgSize {
+    match v.trim() {
+        "cover" => BgSize::Cover,
+        "contain" => BgSize::Contain,
+        "100%" | "100% 100%" => BgSize::Stretch,
+        t => {
+            let parts: Vec<&str> = t.split_ascii_whitespace().collect();
+            match parts.first().and_then(|w| parse_px(w, font_size)) {
+                Some(w) if w > 0.0 => BgSize::Px(w, parts.get(1).and_then(|h| parse_px(h, font_size)).filter(|h| *h > 0.0)),
+                _ => BgSize::Auto,
+            }
+        }
+    }
+}
+
+/// `left top`, `center`, `50% 100%`... as fractions of the free space.
+fn parse_bg_pos(v: &str) -> (f32, f32) {
+    let parts: Vec<&str> = v.split_ascii_whitespace().collect();
+    let frac = |t: &str| match t {
+        "left" | "top" => Some(0.0),
+        "center" => Some(0.5),
+        "right" | "bottom" => Some(1.0),
+        t => t.strip_suffix('%').and_then(|n| n.parse::<f32>().ok()).map(|n| (n / 100.0).clamp(0.0, 1.0)),
+    };
+    match parts.as_slice() {
+        [a] if matches!(*a, "top" | "bottom") => (0.5, frac(a).unwrap_or(0.0)),
+        [a] => (frac(a).unwrap_or(0.0), 0.5),
+        [a, b] if matches!(*a, "top" | "bottom") => (frac(b).unwrap_or(0.0), frac(a).unwrap_or(0.0)),
+        [a, b, ..] => (frac(a).unwrap_or(0.0), frac(b).unwrap_or(0.0)),
+        [] => (0.0, 0.0),
     }
 }
 

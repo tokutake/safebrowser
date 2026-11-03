@@ -16,6 +16,9 @@ pub enum Item {
     /// y is the baseline.
     Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: u32 },
     Image { x: f32, y: f32, w: f32, h: f32, image: Arc<Image> },
+    /// A CSS background image: `tile` is one copy of the image placed at (`ox`, `oy`) from the
+    /// box corner, repeated over the box when `repeat` is set.
+    BgImage { x: f32, y: f32, w: f32, h: f32, tile_w: f32, tile_h: f32, ox: f32, oy: f32, repeat: bool, image: Arc<Image> },
     /// Starts clipping to a box (`overflow: hidden`); nests with `PopClip`.
     PushClip { x: f32, y: f32, w: f32, h: f32 },
     PopClip,
@@ -327,6 +330,12 @@ impl Layouter<'_> {
             self.out.items.len() - 1
         });
 
+        let bg_image = s.bg_image.as_ref().and_then(|u| self.images.get(&**u).cloned());
+        let bg_image_slot = bg_image.as_ref().map(|_| {
+            self.out.items.push(Item::Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0, color: 0 });
+            self.out.items.len() - 1
+        });
+
         let content_x = left + bl + pl;
         let content_y = top + bt + pt;
 
@@ -371,6 +380,8 @@ impl Layouter<'_> {
         // A fixed height only matters when content is clipped to it
         let content_h = match s.height {
             Len::Px(h) if s.clip_overflow && sizing == Sizing::Flow => h.max(0.0),
+            // A box showing a background image keeps its height (banners), but grows with its content
+            Len::Px(h) if bg_image_slot.is_some() && sizing == Sizing::Flow => h.max(content_h),
             _ => content_h,
         };
         let height = bt + pt + content_h + pb + bb;
@@ -381,6 +392,24 @@ impl Layouter<'_> {
 
         if let (Some(slot), Some(color)) = (bg_slot, background) {
             self.out.items[slot] = Item::Rect { x: left, y: top, w: outer_w, h: height, color };
+        }
+        if let (Some(slot), Some(image)) = (bg_image_slot, bg_image) {
+            // The image fills the padding box
+            let (bx, by, bw, bh) = (left + bl, top + bt, outer_w - bl - br, height - bt - bb);
+            if let Some((tile_w, tile_h)) = background_tile(&image, s.bg_size, bw, bh) {
+                self.out.items[slot] = Item::BgImage {
+                    x: bx,
+                    y: by,
+                    w: bw,
+                    h: bh,
+                    tile_w,
+                    tile_h,
+                    ox: (bw - tile_w) * s.bg_pos.0,
+                    oy: (bh - tile_h) * s.bg_pos.1,
+                    repeat: s.bg_repeat,
+                    image,
+                };
+            }
         }
         let c = s.border_color;
         for (w, rect) in [
@@ -1611,10 +1640,31 @@ fn resolve_axis((start, end): GridPlacement, count: usize) -> (Option<usize>, us
     }
 }
 
+/// Size of one background image tile, or `None` when nothing would be visible.
+fn background_tile(image: &Image, size: crate::style::BgSize, bw: f32, bh: f32) -> Option<(f32, f32)> {
+    use crate::style::BgSize;
+    let (nw, nh) = (image.width as f32, image.height as f32);
+    let (w, h) = match size {
+        BgSize::Auto => (nw, nh),
+        BgSize::Cover => {
+            let k = (bw / nw).max(bh / nh);
+            (nw * k, nh * k)
+        }
+        BgSize::Contain => {
+            let k = (bw / nw).min(bh / nh);
+            (nw * k, nh * k)
+        }
+        BgSize::Stretch => (bw, bh),
+        BgSize::Px(w, Some(h)) => (w, h),
+        BgSize::Px(w, None) => (w, nh * w / nw),
+    };
+    (w >= 1.0 && h >= 1.0 && bw >= 1.0 && bh >= 1.0).then_some((w, h))
+}
+
 fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
     for item in items {
         match item {
-            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } | Item::PushClip { x, y, .. } => {
+            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } | Item::BgImage { x, y, .. } | Item::PushClip { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -2041,6 +2091,39 @@ mod image_tests {
 
     fn boxes(l: &PageLayout) -> Vec<(f32, f32, f32, f32)> {
         l.items.iter().filter_map(|i| if let Item::Image { x, y, w, h, .. } = i { Some((*x, *y, *w, *h)) } else { None }).collect()
+    }
+
+    fn bg_items(l: &PageLayout) -> Vec<(f32, f32, f32, f32, f32, f32, f32, f32, bool)> {
+        l.items
+            .iter()
+            .filter_map(|i| match i {
+                Item::BgImage { x, y, w, h, tile_w, tile_h, ox, oy, repeat, .. } => Some((*x, *y, *w, *h, *tile_w, *tile_h, *ox, *oy, *repeat)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn background_images_cover_and_center() {
+        let l = lay_out_with(
+            r#"<div style="width:200px;height:100px;background:url(a.png) no-repeat center / cover"></div>"#,
+            800.0,
+            50,
+            50,
+        );
+        let b = bg_items(&l);
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].2, b[0].3), (200.0, 100.0));
+        assert_eq!((b[0].4, b[0].5), (200.0, 200.0), "cover scales to the larger ratio");
+        assert_eq!((b[0].6, b[0].7, b[0].8), (0.0, -50.0, false), "centered, no repeat");
+    }
+
+    #[test]
+    fn background_images_repeat_by_default_and_ignore_missing_files() {
+        let l = lay_out_with(r#"<div style="height:40px;background-image:url('a.png')"></div><div style="height:40px;background-image:url(gone.png)"></div>"#, 800.0, 10, 10);
+        let b = bg_items(&l);
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].4, b[0].5, b[0].8), (10.0, 10.0, true));
     }
 
     #[test]

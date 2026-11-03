@@ -108,7 +108,7 @@ pub fn from_html(url: Url, kind: PageKind, source: &str, agent: Option<&ureq::Ag
         }
     }
     let title = if info.title.is_empty() { url.to_string() } else { info.title };
-    let images = fetch_images(agent, &base, &dom);
+    let images = fetch_images(agent, &base, &dom, &sheets);
     Loaded { url, kind, base, dom, sheets, title, images }
 }
 
@@ -137,9 +137,14 @@ fn run_scripts(agent: &ureq::Agent, url: &Url, dom: Node) -> Node {
 
 /// Fetches every distinct <img> source (data: URLs are decoded in place). Failures are
 /// ignored: the image just shows its alt text.
-fn fetch_images(agent: Option<&ureq::Agent>, base: &Url, dom: &Node) -> Images {
+fn fetch_images(agent: Option<&ureq::Agent>, base: &Url, dom: &Node, sheets: &[css::Stylesheet]) -> Images {
     let mut sources = Vec::new();
     collect_image_sources(dom, &mut sources);
+    for sheet in sheets {
+        for rule in &sheet.rules {
+            css::background_urls(&rule.declarations, &mut sources);
+        }
+    }
     let mut images = Images::new();
     let mut remote: Vec<(String, Option<Url>)> = Vec::new();
     for src in sources {
@@ -184,6 +189,9 @@ fn collect_image_sources(node: &Node, out: &mut Vec<String>) {
         if let Some(src) = dom::image_source(el) {
             out.push(src.to_string());
         }
+    }
+    if let Some(style) = el.attr("style") {
+        css::background_urls(&css::parse_declarations(style), out);
     }
     for child in &el.children {
         collect_image_sources(child, out);
