@@ -118,8 +118,13 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     let mut floats = std::mem::take(&mut layouter.float_layer);
     layouter.out.items.append(&mut floats);
     // Positioned boxes paint above everything in flow
-    let mut positioned = std::mem::take(&mut layouter.positioned_layer);
+    // (negative z-index paints beneath the in-flow content)
+    let (below, above): (Vec<_>, Vec<_>) = std::mem::take(&mut layouter.positioned_layer).into_iter().partition(|(z, _)| *z < 0);
+    let mut positioned = flatten_layers(above);
     layouter.out.items.append(&mut positioned);
+    let mut below = flatten_layers(below);
+    below.append(&mut layouter.out.items);
+    layouter.out.items = below;
     layouter.out
 }
 
@@ -209,7 +214,8 @@ struct Layouter<'f> {
     /// Draw commands of floats, painted after in-flow content.
     float_layer: Vec<Item>,
     /// Draw commands of absolutely positioned boxes, painted last.
-    positioned_layer: Vec<Item>,
+    /// Absolutely positioned boxes with their `z-index`, in document order.
+    positioned_layer: Vec<(i32, Vec<Item>)>,
     /// Padding boxes of positioned ancestors; the first entry is the initial containing block.
     containing_blocks: Vec<ContainingBlock>,
 }
@@ -705,14 +711,15 @@ impl Layouter<'_> {
         let (h, _, _) = self.block_sized(sn, x, y, outer_w, None, Sizing::Fixed { pct_base: cb.w });
         let mut mine = std::mem::replace(&mut self.out.items, saved_items);
         let nested = std::mem::replace(&mut self.positioned_layer, saved_layer);
-        mine.extend(nested);
+        // The box is a stacking context: its descendants stay inside it, ordered by z-index
+        mine.extend(flatten_layers(nested));
 
         if let (None, Some(b), Some(cb_h)) = (top, bottom, cb.h) {
             let dy = cb.y + cb_h - b - h - y;
             offset_items(&mut mine, 0.0, dy);
             offset_links(&mut self.out.links[links_start..], 0.0, dy);
         }
-        self.positioned_layer.extend(mine);
+        self.positioned_layer.push((s.z_index, mine));
     }
 
     /// Horizontal band [left, right) of a container that is free of floats at height `y`.
@@ -1253,7 +1260,7 @@ impl Layouter<'_> {
         self.inline_width = avail;
         let mut items = std::mem::replace(&mut self.out.items, saved_items);
         items.extend(std::mem::replace(&mut self.float_layer, saved_float_layer));
-        items.extend(std::mem::replace(&mut self.positioned_layer, saved_positioned));
+        items.extend(flatten_layers(std::mem::replace(&mut self.positioned_layer, saved_positioned)));
         let links = std::mem::replace(&mut self.out.links, saved_links);
         Frag::Widget(Widget { w: outer_w, min_w: outer_w, h, kind: WidgetKind::Atomic(Box::new((items, links))) }, style)
     }
@@ -1661,6 +1668,12 @@ fn background_tile(image: &Image, size: crate::style::BgSize, bw: f32, bh: f32) 
     (w >= 1.0 && h >= 1.0 && bw >= 1.0 && bh >= 1.0).then_some((w, h))
 }
 
+/// Concatenates positioned boxes in paint order: by `z-index`, then document order.
+fn flatten_layers(mut layers: Vec<(i32, Vec<Item>)>) -> Vec<Item> {
+    layers.sort_by_key(|(z, _)| *z);
+    layers.into_iter().flat_map(|(_, items)| items).collect()
+}
+
 fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
     for item in items {
         match item {
@@ -1983,6 +1996,15 @@ mod position_tests {
         let (px, py) = find(plain, "Moved");
         assert_eq!((mx - px, my - py), (20.0, 5.0));
         assert_eq!(find(html, "Next"), find(plain, "Next"));
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes() {
+        let order = |html: &str| -> Vec<String> { texts(&lay_out(html, 800.0)).into_iter().map(|t| t.0).collect() };
+        let css = "<style>.a,.b{position:absolute;top:0;left:0}</style>";
+        assert_eq!(order(&format!("{css}<div class=a style='z-index:5'>A</div><div class=b style='z-index:1'>B</div>")), ["B", "A"]);
+        assert_eq!(order(&format!("{css}<div class=a>A</div><div class=b>B</div>")), ["A", "B"]);
+        assert_eq!(order(&format!("{css}<p>flow</p><div class=a style='z-index:-1'>A</div>")), ["A", "flow"]);
     }
 
     #[test]
