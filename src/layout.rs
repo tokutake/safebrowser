@@ -22,6 +22,9 @@ pub enum Item {
     /// Starts clipping to a box (`overflow: hidden`); nests with `PopClip`.
     PushClip { x: f32, y: f32, w: f32, h: f32 },
     PopClip,
+    /// Starts a group of positioned-box items with this `z-index`; only used to order the
+    /// positioned layer and ignored when painting.
+    Layer(i32),
 }
 
 /// A clickable area of the page.
@@ -118,9 +121,25 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     let mut floats = std::mem::take(&mut layouter.float_layer);
     layouter.out.items.append(&mut floats);
     // Positioned boxes paint above everything in flow
-    let mut positioned = std::mem::take(&mut layouter.positioned_layer);
-    layouter.out.items.append(&mut positioned);
+    let positioned = std::mem::take(&mut layouter.positioned_layer);
+    layouter.out.items.extend(sort_by_z(positioned));
     layouter.out
+}
+
+/// Orders groups of positioned items by `z-index`; equal values keep document order.
+fn sort_by_z(items: Vec<Item>) -> Vec<Item> {
+    let mut groups: Vec<(i32, Vec<Item>)> = Vec::new();
+    for item in items {
+        match item {
+            Item::Layer(z) => groups.push((z, Vec::new())),
+            other => match groups.last_mut() {
+                Some(g) => g.1.push(other),
+                None => groups.push((0, vec![other])),
+            },
+        }
+    }
+    groups.sort_by_key(|g| g.0);
+    groups.into_iter().flat_map(|g| g.1).collect()
 }
 
 const BASELINE_RATIO: f32 = 0.88;
@@ -705,6 +724,7 @@ impl Layouter<'_> {
         let (h, _, _) = self.block_sized(sn, x, y, outer_w, None, Sizing::Fixed { pct_base: cb.w });
         let mut mine = std::mem::replace(&mut self.out.items, saved_items);
         let nested = std::mem::replace(&mut self.positioned_layer, saved_layer);
+        mine.insert(0, Item::Layer(s.z_index));
         mine.extend(nested);
 
         if let (None, Some(b), Some(cb_h)) = (top, bottom, cb.h) {
@@ -1253,7 +1273,8 @@ impl Layouter<'_> {
         self.inline_width = avail;
         let mut items = std::mem::replace(&mut self.out.items, saved_items);
         items.extend(std::mem::replace(&mut self.float_layer, saved_float_layer));
-        items.extend(std::mem::replace(&mut self.positioned_layer, saved_positioned));
+        // Inside an atomic box the positioned items keep document order (no markers)
+        items.extend(std::mem::replace(&mut self.positioned_layer, saved_positioned).into_iter().filter(|i| !matches!(i, Item::Layer(_))));
         let links = std::mem::replace(&mut self.out.links, saved_links);
         Frag::Widget(Widget { w: outer_w, min_w: outer_w, h, kind: WidgetKind::Atomic(Box::new((items, links))) }, style)
     }
@@ -1668,7 +1689,7 @@ fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
                 *x += dx;
                 *y += dy;
             }
-            Item::PopClip => {}
+            Item::PopClip | Item::Layer(_) => {}
         }
     }
 }
@@ -1956,6 +1977,14 @@ mod position_tests {
         let t = texts(&lay_out(html, 800.0));
         let hit = t.iter().find(|x| x.0 == word).unwrap_or_else(|| panic!("{word} not found in {t:?}"));
         (hit.1, hit.2)
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes() {
+        let html = "<style>body{margin:0} div{position:absolute; top:0; left:0}</style><div style='z-index:5'>High</div><div>Low</div>";
+        let t = texts(&lay_out(html, 800.0));
+        let (hi, lo) = (t.iter().position(|x| x.0 == "High").unwrap(), t.iter().position(|x| x.0 == "Low").unwrap());
+        assert!(lo < hi, "higher z-index is painted later: {t:?}");
     }
 
     #[test]

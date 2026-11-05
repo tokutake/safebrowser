@@ -250,6 +250,7 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                 // An empty intersection must stay empty (x1 >= x0 checks reject it)
                 canvas.restore_clip([c[0], c[1], c[2].max(c[0]), c[3].max(c[1])]);
             }
+            Item::Layer(_) => {}
             Item::PopClip => {
                 if let Some(prev) = stack.pop() {
                     canvas.restore_clip(prev);
