@@ -80,14 +80,14 @@ cargo test -- --ignored   # end-to-end tests against real sites (needs network)
   - CSS grid (px/%/fr/auto/minmax/repeat including auto-fill, named areas, line placement, auto-placement; rows are sized to content)
   - tables (content-sized columns, colspan, legacy attributes like `width` and `bgcolor`)
   - floats (text wraps around them; tables/flex/grid sit beside them) and `clear`
-  - positioning: `relative`/`sticky` offsets, `absolute` against the nearest positioned ancestor, `fixed` against the page (it scrolls with the page)
+  - positioning: `z-index` orders absolute/fixed boxes (stacking contexts are approximated: a positioned box's descendants stay together), `relative`/`sticky` offsets, `absolute` against the nearest positioned ancestor, `fixed` against the page (it scrolls with the page)
   - images (`<img>` with `src` / `srcset`'s first candidate / `data:` URLs; sized by CSS, `width` / `height` attributes or aspect ratio; may be links, floats, or block-level; not CSS `background-image`, SVG or `<picture>`)
   - `overflow: hidden` / `clip` / `scroll` / `auto` clip content to the box's padding edge (absolutely positioned descendants are not clipped)
   - `::before` / `::after` with string, `attr()` and quote content (icon-font glyphs are dropped)
 - **Backgrounds**: `background-image: url(...)` (also in the `background` shorthand) with `background-size` (`cover`, `contain`, lengths, `100%`), `background-repeat` (repeat / `no-repeat`) and `background-position` (keywords, percentages). Images are fetched like `<img>`; relative URLs resolve against the page, not the stylesheet; gradients are ignored. A box with a background image keeps its `height`.
 - **Selectors**: type, class, ID, attribute (`=`, `~=`, `|=`, `^=`, `$=`, `*=`, `i` flag), all four combinators, structural pseudo-classes (`:first-child`, `:nth-child()`, `*-of-type`, `:empty`, ...), `:not()` / `:is()` / `:where()`, `:checked` / `:disabled`, and escaped class names. Interaction and history states (`:hover`, `:focus`, `:visited`, ...) never match.
   - media queries are evaluated against the real window width, so layouts switch as it is resized
-- **Not supported yet**: text selection inside fields, a drop-down list for selects (clicking cycles through the options), `z-index`, scrolling inside `overflow` boxes, `bottom` inside non-root containing blocks (falls back to the static position), complex selectors inside `:not()`/`:is()`, `:has()`, SVG, `<canvas>`, IME input, text selection, tabs.
+- **Not supported yet**: text selection inside fields, a drop-down list for selects (clicking cycles through the options), scrolling inside `overflow` boxes, `bottom` inside non-root containing blocks (falls back to the static position), complex selectors inside `:not()`/`:is()`, `:has()`, SVG, `<canvas>`, IME input, text selection, tabs.
 - **Dependencies are not unsafe-free**:
   - minifb calls the macOS windowing APIs.
   - fontdue uses SIMD.

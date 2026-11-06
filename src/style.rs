@@ -226,6 +226,8 @@ pub struct Style {
     /// line as a single box.
     pub inline_level: bool,
     pub position: Position,
+    /// `z-index` (0 for `auto`); orders absolutely positioned boxes.
+    pub z_index: i32,
     /// `overflow` other than `visible`: content is clipped to the padding box.
     pub clip_overflow: bool,
     /// `top`, `right`, `bottom`, `left`
@@ -281,6 +283,7 @@ impl Style {
             float: Float::None,
             inline_level: false,
             position: Position::Static,
+            z_index: 0,
             clip_overflow: false,
             inset: [Len::Auto; 4],
             clear: (false, false),
@@ -325,6 +328,7 @@ impl Style {
             float: Float::None,
             inline_level: false,
             position: Position::Static,
+            z_index: 0,
             clip_overflow: false,
             inset: [Len::Auto; 4],
             clear: (false, false),
@@ -846,6 +850,7 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
                 _ => Position::Static,
             }
         }
+        "z-index" => s.z_index = v.parse::<i32>().unwrap_or(0).clamp(-1_000_000, 1_000_000),
         "top" | "right" | "bottom" | "left" => {
             let side = ["top", "right", "bottom", "left"].iter().position(|s| *s == name).unwrap_or(0);
             s.inset[side] = parse_length(v, s.font_size).unwrap_or(s.inset[side]);
