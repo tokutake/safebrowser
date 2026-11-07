@@ -118,9 +118,22 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     let mut floats = std::mem::take(&mut layouter.float_layer);
     layouter.out.items.append(&mut floats);
     // Positioned boxes paint above everything in flow
-    let mut positioned = std::mem::take(&mut layouter.positioned_layer);
-    layouter.out.items.append(&mut positioned);
+    let positioned = std::mem::take(&mut layouter.positioned_layer);
+    // Negative z-index boxes go beneath the in-flow content
+    let (below, above): (Vec<_>, Vec<_>) = positioned.into_iter().partition(|(z, _)| *z < 0);
+    if !below.is_empty() {
+        let mut items = flatten_layer(below);
+        items.append(&mut layouter.out.items);
+        layouter.out.items = items;
+    }
+    layouter.out.items.append(&mut flatten_layer(above));
     layouter.out
+}
+
+/// Orders positioned boxes by z-index; equal values keep document order.
+fn flatten_layer(mut layer: Vec<(i32, Vec<Item>)>) -> Vec<Item> {
+    layer.sort_by_key(|(z, _)| *z);
+    layer.into_iter().flat_map(|(_, items)| items).collect()
 }
 
 const BASELINE_RATIO: f32 = 0.88;
@@ -209,7 +222,8 @@ struct Layouter<'f> {
     /// Draw commands of floats, painted after in-flow content.
     float_layer: Vec<Item>,
     /// Draw commands of absolutely positioned boxes, painted last.
-    positioned_layer: Vec<Item>,
+    /// Absolutely positioned boxes as (z-index, draw commands), in document order.
+    positioned_layer: Vec<(i32, Vec<Item>)>,
     /// Padding boxes of positioned ancestors; the first entry is the initial containing block.
     containing_blocks: Vec<ContainingBlock>,
 }
@@ -705,14 +719,14 @@ impl Layouter<'_> {
         let (h, _, _) = self.block_sized(sn, x, y, outer_w, None, Sizing::Fixed { pct_base: cb.w });
         let mut mine = std::mem::replace(&mut self.out.items, saved_items);
         let nested = std::mem::replace(&mut self.positioned_layer, saved_layer);
-        mine.extend(nested);
+        mine.extend(flatten_layer(nested));
 
         if let (None, Some(b), Some(cb_h)) = (top, bottom, cb.h) {
             let dy = cb.y + cb_h - b - h - y;
             offset_items(&mut mine, 0.0, dy);
             offset_links(&mut self.out.links[links_start..], 0.0, dy);
         }
-        self.positioned_layer.extend(mine);
+        self.positioned_layer.push((s.z_index, mine));
     }
 
     /// Horizontal band [left, right) of a container that is free of floats at height `y`.
@@ -1253,7 +1267,7 @@ impl Layouter<'_> {
         self.inline_width = avail;
         let mut items = std::mem::replace(&mut self.out.items, saved_items);
         items.extend(std::mem::replace(&mut self.float_layer, saved_float_layer));
-        items.extend(std::mem::replace(&mut self.positioned_layer, saved_positioned));
+        items.extend(flatten_layer(std::mem::replace(&mut self.positioned_layer, saved_positioned)));
         let links = std::mem::replace(&mut self.out.links, saved_links);
         Frag::Widget(Widget { w: outer_w, min_w: outer_w, h, kind: WidgetKind::Atomic(Box::new((items, links))) }, style)
     }
@@ -1989,6 +2003,14 @@ mod position_tests {
     fn fixed_bottom_uses_viewport_height() {
         let (_, y) = find("<style>.bar{position:fixed; bottom:0; left:0}</style><div class=bar>Cookie</div>", "Cookie");
         assert!(y > 550.0 && y <= 600.0, "anchored to the 600px viewport bottom: {y}");
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes() {
+        let html = "<style>.a,.b{position:absolute;top:0;left:0}</style><div class=a style='z-index:5'>High</div><div class=b>Low</div>";
+        let t = texts(&lay_out(html, 800.0));
+        let pos = |w: &str| t.iter().position(|x| x.0 == w).unwrap();
+        assert!(pos("High") > pos("Low"), "higher z-index paints later: {t:?}");
     }
 }
 

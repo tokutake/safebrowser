@@ -230,6 +230,8 @@ pub struct Style {
     pub clip_overflow: bool,
     /// `top`, `right`, `bottom`, `left`
     pub inset: [Len; 4],
+    /// `z-index` (0 when auto); orders absolutely positioned boxes.
+    pub z_index: i32,
     /// `clear`: (left, right)
     pub clear: (bool, bool),
     /// Raw `content` value (case preserved); only meaningful on pseudo-elements.
@@ -283,6 +285,7 @@ impl Style {
             position: Position::Static,
             clip_overflow: false,
             inset: [Len::Auto; 4],
+            z_index: 0,
             clear: (false, false),
             content: None,
             vars: Rc::default(),
@@ -327,6 +330,7 @@ impl Style {
             position: Position::Static,
             clip_overflow: false,
             inset: [Len::Auto; 4],
+            z_index: 0,
             clear: (false, false),
             content: None,
             ..parent.clone()
@@ -849,6 +853,13 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
         "top" | "right" | "bottom" | "left" => {
             let side = ["top", "right", "bottom", "left"].iter().position(|s| *s == name).unwrap_or(0);
             s.inset[side] = parse_length(v, s.font_size).unwrap_or(s.inset[side]);
+        }
+        "z-index" => {
+            if let Ok(z) = v.trim().parse::<i32>() {
+                s.z_index = z.clamp(-100_000, 100_000);
+            } else if v.trim() == "auto" {
+                s.z_index = 0;
+            }
         }
         "inset" => apply_box(&mut s.inset, v, s.font_size, true),
         "float" => {
