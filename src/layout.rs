@@ -22,6 +22,9 @@ pub enum Item {
     /// Starts clipping to a box (`overflow: hidden`); nests with `PopClip`.
     PushClip { x: f32, y: f32, w: f32, h: f32 },
     PopClip,
+    /// Brackets the items of a positioned box with a `z-index`; resolved by `apply_z_order`.
+    PushZ(i32),
+    PopZ,
 }
 
 /// A clickable area of the page.
@@ -120,7 +123,54 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     // Positioned boxes paint above everything in flow
     let mut positioned = std::mem::take(&mut layouter.positioned_layer);
     layouter.out.items.append(&mut positioned);
+    layouter.out.items = apply_z_order(std::mem::take(&mut layouter.out.items));
     layouter.out
+}
+
+/// Resolves `PushZ`/`PopZ` groups: negative groups paint before everything else, the rest
+/// after it, each in ascending order (ties keep document order). Nested groups are ordered
+/// inside their parent, which approximates a stacking context.
+fn apply_z_order(items: Vec<Item>) -> Vec<Item> {
+    if !items.iter().any(|i| matches!(i, Item::PushZ(_))) {
+        return items;
+    }
+    let mut base = Vec::new();
+    let mut groups: Vec<(i32, Vec<Item>)> = Vec::new();
+    let mut iter = items.into_iter();
+    while let Some(item) = iter.next() {
+        match item {
+            Item::PushZ(z) => {
+                let (mut depth, mut inner) = (1, Vec::new());
+                for it in iter.by_ref() {
+                    match it {
+                        Item::PushZ(_) => depth += 1,
+                        Item::PopZ => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    inner.push(it);
+                }
+                groups.push((z, apply_z_order(inner)));
+            }
+            Item::PopZ => {}
+            other => base.push(other),
+        }
+    }
+    groups.sort_by_key(|g| g.0);
+    let split = groups.partition_point(|g| g.0 < 0);
+    let mut out = Vec::new();
+    for (i, (_, g)) in groups.into_iter().enumerate() {
+        if i == split {
+            out.append(&mut base);
+        }
+        out.extend(g);
+    }
+    out.append(&mut base);
+    out
 }
 
 const BASELINE_RATIO: f32 = 0.88;
@@ -425,6 +475,10 @@ impl Layouter<'_> {
         if rel_dx != 0.0 || rel_dy != 0.0 {
             offset_items(&mut self.out.items[items_start..], rel_dx, rel_dy);
             offset_links(&mut self.out.links[links_start..], rel_dx, rel_dy);
+        }
+        if let (Some(z), true) = (s.z_index, s.position != Position::Static) {
+            self.out.items.insert(items_start, Item::PushZ(z));
+            self.out.items.push(Item::PopZ);
         }
         (mt + height + mb, mt, mb)
     }
@@ -1668,7 +1722,7 @@ fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
                 *x += dx;
                 *y += dy;
             }
-            Item::PopClip => {}
+            Item::PopClip | Item::PushZ(_) | Item::PopZ => {}
         }
     }
 }
@@ -1956,6 +2010,15 @@ mod position_tests {
         let t = texts(&lay_out(html, 800.0));
         let hit = t.iter().find(|x| x.0 == word).unwrap_or_else(|| panic!("{word} not found in {t:?}"));
         (hit.1, hit.2)
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes() {
+        let html = "<style>body{margin:0} div{position:absolute;top:0;left:0;width:50px;height:50px}</style>
+                    <div style='z-index:2;background:#f00'>Hi</div><div style='z-index:1;background:#0f0'>Lo</div>";
+        let l = lay_out(html, 800.0);
+        let colors: Vec<u32> = l.items.iter().filter_map(|i| if let super::Item::Rect { color, .. } = i { Some(*color) } else { None }).collect();
+        assert_eq!(colors, vec![0x00ff00, 0xff0000]);
     }
 
     #[test]

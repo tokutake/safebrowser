@@ -226,6 +226,8 @@ pub struct Style {
     /// line as a single box.
     pub inline_level: bool,
     pub position: Position,
+    /// `z-index` of a positioned box (`None` = auto).
+    pub z_index: Option<i32>,
     /// `overflow` other than `visible`: content is clipped to the padding box.
     pub clip_overflow: bool,
     /// `top`, `right`, `bottom`, `left`
@@ -281,6 +283,7 @@ impl Style {
             float: Float::None,
             inline_level: false,
             position: Position::Static,
+            z_index: None,
             clip_overflow: false,
             inset: [Len::Auto; 4],
             clear: (false, false),
@@ -325,6 +328,7 @@ impl Style {
             float: Float::None,
             inline_level: false,
             position: Position::Static,
+            z_index: None,
             clip_overflow: false,
             inset: [Len::Auto; 4],
             clear: (false, false),
@@ -838,6 +842,7 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
             // The shorthand may carry two values; clip when either axis is not visible
             s.clip_overflow = v.split_whitespace().any(|w| matches!(w, "hidden" | "clip" | "scroll" | "auto"));
         }
+        "z-index" => s.z_index = v.trim().parse::<i32>().ok(),
         "position" => {
             s.position = match v {
                 "relative" | "sticky" | "-webkit-sticky" => Position::Relative,

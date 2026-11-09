@@ -255,6 +255,7 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                     canvas.restore_clip(prev);
                 }
             }
+            Item::PushZ(_) | Item::PopZ => {}
             Item::Rect { x, y, w, h, color } => {
                 let sy = y + dy;
                 if sy < bottom && sy + h > top {
