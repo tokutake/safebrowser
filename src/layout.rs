@@ -118,8 +118,8 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     let mut floats = std::mem::take(&mut layouter.float_layer);
     layouter.out.items.append(&mut floats);
     // Positioned boxes paint above everything in flow
-    let mut positioned = std::mem::take(&mut layouter.positioned_layer);
-    layouter.out.items.append(&mut positioned);
+    let positioned = std::mem::take(&mut layouter.positioned_layer);
+    layouter.out.items.extend(flatten_layer(positioned));
     layouter.out
 }
 
@@ -209,7 +209,7 @@ struct Layouter<'f> {
     /// Draw commands of floats, painted after in-flow content.
     float_layer: Vec<Item>,
     /// Draw commands of absolutely positioned boxes, painted last.
-    positioned_layer: Vec<Item>,
+    positioned_layer: Vec<(i32, Vec<Item>)>,
     /// Padding boxes of positioned ancestors; the first entry is the initial containing block.
     containing_blocks: Vec<ContainingBlock>,
 }
@@ -705,14 +705,15 @@ impl Layouter<'_> {
         let (h, _, _) = self.block_sized(sn, x, y, outer_w, None, Sizing::Fixed { pct_base: cb.w });
         let mut mine = std::mem::replace(&mut self.out.items, saved_items);
         let nested = std::mem::replace(&mut self.positioned_layer, saved_layer);
-        mine.extend(nested);
+        // Nested boxes stay with their parent, as inside a stacking context
+        mine.extend(flatten_layer(nested));
 
         if let (None, Some(b), Some(cb_h)) = (top, bottom, cb.h) {
             let dy = cb.y + cb_h - b - h - y;
             offset_items(&mut mine, 0.0, dy);
             offset_links(&mut self.out.links[links_start..], 0.0, dy);
         }
-        self.positioned_layer.extend(mine);
+        self.positioned_layer.push((s.z_index, mine));
     }
 
     /// Horizontal band [left, right) of a container that is free of floats at height `y`.
@@ -1253,7 +1254,7 @@ impl Layouter<'_> {
         self.inline_width = avail;
         let mut items = std::mem::replace(&mut self.out.items, saved_items);
         items.extend(std::mem::replace(&mut self.float_layer, saved_float_layer));
-        items.extend(std::mem::replace(&mut self.positioned_layer, saved_positioned));
+        items.extend(flatten_layer(std::mem::replace(&mut self.positioned_layer, saved_positioned)));
         let links = std::mem::replace(&mut self.out.links, saved_links);
         Frag::Widget(Widget { w: outer_w, min_w: outer_w, h, kind: WidgetKind::Atomic(Box::new((items, links))) }, style)
     }
@@ -1661,6 +1662,12 @@ fn background_tile(image: &Image, size: crate::style::BgSize, bw: f32, bh: f32) 
     (w >= 1.0 && h >= 1.0 && bw >= 1.0 && bh >= 1.0).then_some((w, h))
 }
 
+/// Orders positioned boxes by `z-index` (stable, so equal values keep document order).
+fn flatten_layer(mut layer: Vec<(i32, Vec<Item>)>) -> Vec<Item> {
+    layer.sort_by_key(|(z, _)| *z);
+    layer.into_iter().flat_map(|(_, items)| items).collect()
+}
+
 fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
     for item in items {
         match item {
@@ -1967,6 +1974,14 @@ mod position_tests {
         assert!(tag_x > 700.0, "right-aligned in the box: {tag_x}");
         assert!(tag_y > 100.0 && tag_y < body_y + 20.0);
         assert_eq!(body_x, 0.0, "the absolute box takes no space in flow");
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes() {
+        let l = lay_out("<style>body{margin:0} div{position:absolute; top:0; left:0}</style><div style='z-index:5;background:#ff0000'>High</div><div style='background:#00ff00'>Low</div>", 800.0);
+        let first = l.items.iter().position(|i| matches!(i, super::Item::Rect { color: 0xff0000, .. })).expect("red");
+        let second = l.items.iter().position(|i| matches!(i, super::Item::Rect { color: 0x00ff00, .. })).expect("green");
+        assert!(first > second, "z-index:5 paints after the auto box");
     }
 
     #[test]
