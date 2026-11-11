@@ -240,7 +240,14 @@ pub fn paint_fields(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout,
 pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, dy: f32, top: f32, bottom: f32) {
     let base = canvas.clip();
     let mut stack: Vec<[i32; 4]> = Vec::new();
-    for item in &layout.items {
+    paint_items(canvas, fonts, &layout.items, dy, top, bottom, &mut stack);
+    canvas.restore_clip(base);
+}
+
+/// Paints draw commands in order. `stack` holds the clips saved by `PushClip`; it is shared
+/// with nested `Stack` groups, which push and pop their own clips.
+fn paint_items(canvas: &mut Canvas, fonts: &mut Fonts, items: &[Item], dy: f32, top: f32, bottom: f32, stack: &mut Vec<[i32; 4]>) {
+    for item in items {
         match item {
             Item::PushClip { x, y, w, h } => {
                 let cur = canvas.clip();
@@ -305,7 +312,7 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                     canvas.text(fonts, *x, sy, text, *size, *bold, *color);
                 }
             }
+            Item::Stack { items, .. } => paint_items(canvas, fonts, items, dy, top, bottom, stack),
         }
     }
-    canvas.restore_clip(base);
 }

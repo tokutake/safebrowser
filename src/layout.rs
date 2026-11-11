@@ -22,6 +22,8 @@ pub enum Item {
     /// Starts clipping to a box (`overflow: hidden`); nests with `PopClip`.
     PushClip { x: f32, y: f32, w: f32, h: f32 },
     PopClip,
+    /// An absolutely positioned box and the boxes inside it, ordered by `z` among siblings.
+    Stack { z: i32, items: Vec<Item> },
 }
 
 /// A clickable area of the page.
@@ -118,7 +120,9 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     let mut floats = std::mem::take(&mut layouter.float_layer);
     layouter.out.items.append(&mut floats);
     // Positioned boxes paint above everything in flow
+    // Stable sort: boxes with equal z-index keep document order
     let mut positioned = std::mem::take(&mut layouter.positioned_layer);
+    positioned.sort_by_key(|item| if let Item::Stack { z, .. } = item { *z } else { 0 });
     layouter.out.items.append(&mut positioned);
     layouter.out
 }
@@ -712,7 +716,7 @@ impl Layouter<'_> {
             offset_items(&mut mine, 0.0, dy);
             offset_links(&mut self.out.links[links_start..], 0.0, dy);
         }
-        self.positioned_layer.extend(mine);
+        self.positioned_layer.push(Item::Stack { z: s.z_index, items: mine });
     }
 
     /// Horizontal band [left, right) of a container that is free of floats at height `y`.
@@ -1669,6 +1673,7 @@ fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
                 *y += dy;
             }
             Item::PopClip => {}
+            Item::Stack { items, .. } => offset_items(items, dx, dy),
         }
     }
 }
@@ -1785,14 +1790,18 @@ mod tests {
     }
 
     pub(super) fn texts(layout: &PageLayout) -> Vec<(String, f32, f32)> {
-        layout
-            .items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Text { x, y, text, .. } => Some((text.clone(), *x, *y)),
-                _ => None,
-            })
-            .collect()
+        fn collect(items: &[Item], out: &mut Vec<(String, f32, f32)>) {
+            for i in items {
+                match i {
+                    Item::Text { x, y, text, .. } => out.push((text.clone(), *x, *y)),
+                    Item::Stack { items, .. } => collect(items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        collect(&layout.items, &mut out);
+        out
     }
 
     #[test]
@@ -1983,6 +1992,27 @@ mod position_tests {
         let (px, py) = find(plain, "Moved");
         assert_eq!((mx - px, my - py), (20.0, 5.0));
         assert_eq!(find(html, "Next"), find(plain, "Next"));
+    }
+
+    fn order_of(html: &str) -> Vec<String> {
+        texts(&lay_out(html, 800.0)).into_iter().map(|x| x.0).collect()
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes_and_keeps_document_order_on_ties() {
+        let order = order_of;
+        let stacked = "<style>body{margin:0} span{position:absolute; top:0; left:0}</style>
+                       <span style='z-index:2'>High</span><span style='z-index:-1'>Low</span><span>Zero</span>";
+        assert_eq!(order(stacked), ["Low", "Zero", "High"]);
+        let ties = "<style>body{margin:0} span{position:absolute; top:0; left:0; z-index:1}</style><span>First</span><span>Second</span>";
+        assert_eq!(order(ties), ["First", "Second"]);
+    }
+
+    #[test]
+    fn boxes_inside_a_stacked_box_paint_with_it() {
+        let html = "<style>body{margin:0} .p{position:absolute; top:0; left:0; z-index:5} .o{position:absolute; top:0; left:0; z-index:3}</style>
+                    <div class=p>Parent<span style='position:absolute; top:0; left:0; z-index:-9'>Child</span></div><span class=o>Other</span>";
+        assert_eq!(order_of(html), ["Other", "Parent", "Child"]);
     }
 
     #[test]
