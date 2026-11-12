@@ -109,6 +109,7 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
         floats: Vec::new(),
         float_layer: Vec::new(),
         positioned_layer: Vec::new(),
+        z_layer: Vec::new(),
         containing_blocks: vec![ContainingBlock { x: 0.0, y: 0.0, w: width, h: Some(viewport_height) }],
     };
     let (height, _, _) = layouter.block(root, 0.0, 0.0, width, None);
@@ -120,7 +121,29 @@ pub fn layout(root: &StyledNode, width: f32, viewport_height: f32, fonts: &mut F
     // Positioned boxes paint above everything in flow
     let mut positioned = std::mem::take(&mut layouter.positioned_layer);
     layouter.out.items.append(&mut positioned);
+    let z = std::mem::take(&mut layouter.z_layer);
+    layouter.out.items = apply_z_layers(std::mem::take(&mut layouter.out.items), z);
     layouter.out
+}
+
+/// Negative `z-index` boxes go below all in-flow content, positive ones above everything
+/// else; equal values keep document order.
+fn apply_z_layers(flow: Vec<Item>, mut z: Vec<(i32, Vec<Item>)>) -> Vec<Item> {
+    if z.is_empty() {
+        return flow;
+    }
+    z.sort_by_key(|(k, _)| *k); // stable
+    let mut out = Vec::with_capacity(flow.len());
+    let split = z.partition_point(|(k, _)| *k < 0);
+    let above = z.split_off(split);
+    for (_, mut items) in z {
+        out.append(&mut items);
+    }
+    out.extend(flow);
+    for (_, mut items) in above {
+        out.append(&mut items);
+    }
+    out
 }
 
 const BASELINE_RATIO: f32 = 0.88;
@@ -210,6 +233,8 @@ struct Layouter<'f> {
     float_layer: Vec<Item>,
     /// Draw commands of absolutely positioned boxes, painted last.
     positioned_layer: Vec<Item>,
+    /// Absolutely positioned boxes with an explicit `z-index`, in document order.
+    z_layer: Vec<(i32, Vec<Item>)>,
     /// Padding boxes of positioned ancestors; the first entry is the initial containing block.
     containing_blocks: Vec<ContainingBlock>,
 }
@@ -712,7 +737,11 @@ impl Layouter<'_> {
             offset_items(&mut mine, 0.0, dy);
             offset_links(&mut self.out.links[links_start..], 0.0, dy);
         }
-        self.positioned_layer.extend(mine);
+        if s.z_index != 0 {
+            self.z_layer.push((s.z_index, mine));
+        } else {
+            self.positioned_layer.extend(mine);
+        }
     }
 
     /// Horizontal band [left, right) of a container that is free of floats at height `y`.
@@ -1245,6 +1274,7 @@ impl Layouter<'_> {
         let saved_links = std::mem::take(&mut self.out.links);
         let saved_float_layer = std::mem::take(&mut self.float_layer);
         let saved_positioned = std::mem::take(&mut self.positioned_layer);
+        let saved_z = std::mem::take(&mut self.z_layer);
         let saved_link = std::mem::replace(&mut self.link, href);
         let floats = self.floats.len();
         let (h, _, _) = self.block_sized(sn, 0.0, 0.0, outer_w, None, Sizing::Fixed { pct_base: avail });
@@ -1254,6 +1284,8 @@ impl Layouter<'_> {
         let mut items = std::mem::replace(&mut self.out.items, saved_items);
         items.extend(std::mem::replace(&mut self.float_layer, saved_float_layer));
         items.extend(std::mem::replace(&mut self.positioned_layer, saved_positioned));
+        let z = std::mem::replace(&mut self.z_layer, saved_z);
+        let items = apply_z_layers(items, z);
         let links = std::mem::replace(&mut self.out.links, saved_links);
         Frag::Widget(Widget { w: outer_w, min_w: outer_w, h, kind: WidgetKind::Atomic(Box::new((items, links))) }, style)
     }
@@ -2091,6 +2123,27 @@ mod image_tests {
 
     fn boxes(l: &PageLayout) -> Vec<(f32, f32, f32, f32)> {
         l.items.iter().filter_map(|i| if let Item::Image { x, y, w, h, .. } = i { Some((*x, *y, *w, *h)) } else { None }).collect()
+    }
+
+    fn first_rect_colors(l: &PageLayout) -> Vec<u32> {
+        l.items.iter().filter_map(|i| if let Item::Rect { color, .. } = i { Some(*color) } else { None }).collect()
+    }
+
+    #[test]
+    fn z_index_orders_positioned_boxes() {
+        let l = lay_out_with(
+            r#"<div style="position:relative;height:50px;background:#000001">
+            <div style="position:absolute;top:0;left:0;width:10px;height:10px;background:#000002;z-index:2"></div>
+            <div style="position:absolute;top:0;left:0;width:10px;height:10px;background:#000003;z-index:1"></div>
+            <div style="position:absolute;top:0;left:0;width:10px;height:10px;background:#000004"></div>
+            <div style="position:absolute;top:0;left:0;width:10px;height:10px;background:#000005;z-index:-1"></div>
+            </div>"#,
+            800.0,
+            1,
+            1,
+        );
+        let c: Vec<u32> = first_rect_colors(&l).into_iter().filter(|c| (1..=5).contains(c)).collect();
+        assert_eq!(c, vec![5, 1, 4, 3, 2]);
     }
 
     fn bg_items(l: &PageLayout) -> Vec<(f32, f32, f32, f32, f32, f32, f32, f32, bool)> {
