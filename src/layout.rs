@@ -162,12 +162,13 @@ struct TextStyle {
     bold: bool,
     color: u32,
     underline: bool,
+    line_through: bool,
     line_height: f32,
 }
 
 impl From<&Style> for TextStyle {
     fn from(s: &Style) -> Self {
-        TextStyle { size: s.font_size, bold: s.bold, color: s.color, underline: s.underline, line_height: s.line_height }
+        TextStyle { size: s.font_size, bold: s.bold, color: s.color, underline: s.underline, line_through: s.line_through, line_height: s.line_height }
     }
 }
 
@@ -554,11 +555,12 @@ impl Layouter<'_> {
     fn collect(&mut self, sn: &StyledNode, href: Option<Target>, out: &mut Vec<Frag>) {
         let style = TextStyle::from(&sn.style);
         if let Some(text) = &sn.generated {
-            split_words(text, &style, &href, out);
+            split_words(&sn.style.text_transform.apply(text), &style, &href, out);
             return;
         }
         match sn.node {
             Node::Text(text) if sn.style.pre => {
+                let text = &sn.style.text_transform.apply(text);
                 for (i, line) in text.split('\n').enumerate() {
                     if i > 0 {
                         out.push(Frag::Break(style.clone()));
@@ -568,7 +570,7 @@ impl Layouter<'_> {
                     }
                 }
             }
-            Node::Text(text) => split_words(text, &style, &href, out),
+            Node::Text(text) => split_words(&sn.style.text_transform.apply(text), &style, &href, out),
             Node::Element(el) if sn.is_atomic_inline() && !is_form_control(sn) && !matches!(el.tag.as_str(), "img" | "br") => {
                 let frag = self.atomic(sn, style, href);
                 out.push(frag);
@@ -1489,20 +1491,24 @@ impl Layouter<'_> {
                 let thickness = (p.style.size / 14.0).max(1.0);
                 self.out.items.push(Item::Rect { x: start, y: baseline + 2.0, w: px + p.w - start, h: thickness, color: p.style.color });
             }
+            if p.style.line_through {
+                let thickness = (p.style.size / 14.0).max(1.0);
+                self.out.items.push(Item::Rect { x: px, y: baseline - p.style.size * 0.3, w: p.w, h: thickness, color: p.style.color });
+            }
             prev_href = p.href.clone();
             if let Some(target) = p.href {
                 self.out.links.push(LinkBox { x: px, y: line.cy, w: p.w, h: line_h, target });
             }
             // Merge adjacent words with the same style (e.g. per-character CJK) into one draw command
             if let (Some(end), Some(Item::Text { text, size, bold, color, .. })) = (prev_end, self.out.items.last_mut()) {
-                if (end - px).abs() < 0.01 && *size == p.style.size && *bold == p.style.bold && *color == p.style.color && !p.style.underline {
+                if (end - px).abs() < 0.01 && *size == p.style.size && *bold == p.style.bold && *color == p.style.color && !p.style.underline && !p.style.line_through {
                     text.push_str(&p.text);
                     prev_end = Some(px + p.w);
                     continue;
                 }
             }
             self.out.items.push(Item::Text { x: px, y: baseline, text: p.text, size: p.style.size, bold: p.style.bold, color: p.style.color });
-            prev_end = (!p.style.underline).then_some(px + p.w);
+            prev_end = (!p.style.underline && !p.style.line_through).then_some(px + p.w);
         }
         line.cy += line_h;
         line.cx = 0.0;
@@ -2207,5 +2213,33 @@ mod image_tests {
     fn linked_images_are_clickable() {
         let l = lay_out_with(r#"<a href="/x"><img src="a.png"></a>"#, 800.0, 30, 30);
         assert!(l.link_at(10.0, 10.0).is_some());
+    }
+}
+
+#[cfg(test)]
+mod text_transform_tests {
+    use super::tests::{lay_out, texts};
+
+    fn words(html: &str) -> Vec<String> {
+        texts(&lay_out(html, 800.0)).into_iter().map(|t| t.0.to_string()).collect()
+    }
+
+    #[test]
+    fn transforms_case() {
+        assert_eq!(words("<p style='text-transform:uppercase'>hello world</p>"), ["HELLO", "WORLD"]);
+        assert_eq!(words("<p style='text-transform:lowercase'>HeLLo</p>"), ["hello"]);
+        assert_eq!(words("<p style='text-transform:capitalize'>hello big world</p>"), ["Hello", "Big", "World"]);
+    }
+
+    #[test]
+    fn transform_is_inherited() {
+        assert_eq!(words("<div style='text-transform:uppercase'><span>abc</span></div>"), ["ABC"]);
+    }
+
+    #[test]
+    fn line_through_draws_a_rule() {
+        let plain = lay_out("<p>Gone</p>", 800.0);
+        let struck = lay_out("<p style='text-decoration:line-through'>Gone</p>", 800.0);
+        assert_eq!(struck.items.len(), plain.items.len() + 1);
     }
 }

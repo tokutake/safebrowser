@@ -190,6 +190,8 @@ pub struct Style {
     pub font_size: f32,
     pub bold: bool,
     pub underline: bool,
+    pub line_through: bool,
+    pub text_transform: TextTransform,
     pub pre: bool,
     pub text_align: Align,
     pub line_height: f32,
@@ -252,6 +254,8 @@ impl Style {
             font_size: 16.0,
             bold: false,
             underline: false,
+            line_through: false,
+            text_transform: TextTransform::None,
             pre: false,
             text_align: Align::Left,
             line_height: 1.45,
@@ -340,6 +344,34 @@ impl Style {
     /// Effective border widths [top, right, bottom, left].
     pub fn border(&self) -> [f32; 4] {
         std::array::from_fn(|i| if self.border_on[i] { self.border_width[i] } else { 0.0 })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TextTransform {
+    None,
+    Upper,
+    Lower,
+    Capitalize,
+}
+
+impl TextTransform {
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            TextTransform::None => text.to_string(),
+            TextTransform::Upper => text.to_uppercase(),
+            TextTransform::Lower => text.to_lowercase(),
+            TextTransform::Capitalize => {
+                let mut start = true;
+                text.chars()
+                    .map(|c| {
+                        let out = if start && c.is_alphanumeric() { c.to_uppercase().collect::<String>() } else { c.to_string() };
+                        start = c.is_whitespace();
+                        out
+                    })
+                    .collect()
+            }
+        }
     }
 }
 
@@ -764,7 +796,18 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
                 _ => s.text_align,
             }
         }
-        "text-decoration" | "text-decoration-line" => s.underline = v.contains("underline"),
+        "text-decoration" | "text-decoration-line" => {
+            s.underline = v.contains("underline");
+            s.line_through = v.contains("line-through");
+        }
+        "text-transform" => {
+            s.text_transform = match v {
+                "uppercase" => TextTransform::Upper,
+                "lowercase" => TextTransform::Lower,
+                "capitalize" => TextTransform::Capitalize,
+                _ => TextTransform::None,
+            }
+        }
         "white-space" => s.pre = matches!(v, "pre" | "pre-wrap" | "break-spaces"),
         "list-style" | "list-style-type" => s.list_marker = !v.split_whitespace().any(|t| t == "none"),
         "margin" => apply_box(&mut s.margin, v, s.font_size, true),
