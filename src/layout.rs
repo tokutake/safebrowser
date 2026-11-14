@@ -319,6 +319,9 @@ impl Layouter<'_> {
             if s.max_width != Len::Auto {
                 width = width.min(s.max_width.resolve(pct_base));
             }
+            if s.min_width != Len::Auto {
+                width = width.max(s.min_width.resolve(pct_base));
+            }
             // Tables without an explicit width shrink to fit their content
             if s.display == Display::Table && s.width == Len::Auto {
                 width = width.min(self.intrinsic(sn).1 - ml - mr - frame);
@@ -408,6 +411,15 @@ impl Layouter<'_> {
             Len::Px(h) if s.clip_overflow && sizing == Sizing::Flow => h.max(0.0),
             // A box showing a background image keeps its height (banners), but grows with its content
             Len::Px(h) if bg_image_slot.is_some() && sizing == Sizing::Flow => h.max(content_h),
+            _ => content_h,
+        };
+        // min-height always applies; max-height only matters when content is clipped
+        let content_h = match (s.max_height, s.clip_overflow) {
+            (Len::Px(m), true) if sizing == Sizing::Flow => content_h.min(m.max(0.0)),
+            _ => content_h,
+        };
+        let content_h = match s.min_height {
+            Len::Px(m) if sizing == Sizing::Flow => content_h.max(m),
             _ => content_h,
         };
         let height = bt + pt + content_h + pb + bb;
@@ -1099,6 +1111,9 @@ impl Layouter<'_> {
         if s.max_width != Len::Auto {
             base = base.min(outer(s.max_width.resolve(container_w)));
         }
+        if s.min_width != Len::Auto {
+            base = base.max(outer(s.min_width.resolve(container_w)));
+        }
         FlexItem { node, base, min: min.min(base), grow: s.flex_grow, shrink: s.flex_shrink, auto_left, auto_right }
     }
 
@@ -1270,6 +1285,9 @@ impl Layouter<'_> {
         };
         if s.max_width != Len::Auto {
             outer_w = outer_w.min(s.max_width.resolve(avail) + frame);
+        }
+        if s.min_width != Len::Auto {
+            outer_w = outer_w.max(s.min_width.resolve(avail) + frame);
         }
 
         let saved_items = std::mem::take(&mut self.out.items);
@@ -2241,5 +2259,33 @@ mod text_transform_tests {
         let plain = lay_out("<p>Gone</p>", 800.0);
         let struck = lay_out("<p style='text-decoration:line-through'>Gone</p>", 800.0);
         assert_eq!(struck.items.len(), plain.items.len() + 1);
+    }
+}
+
+#[cfg(test)]
+mod min_max_tests {
+    use super::tests::lay_out;
+
+    #[test]
+    fn min_height_extends_the_box() {
+        let plain = lay_out("<div>x</div><p>after</p>", 800.0);
+        let tall = lay_out("<div style='min-height:300px'>x</div><p>after</p>", 800.0);
+        assert!(tall.height >= plain.height + 200.0);
+    }
+
+    #[test]
+    fn max_height_clips_only_with_overflow() {
+        let body = "<p>a</p><p>b</p><p>c</p><p>d</p><p>e</p>";
+        let free = lay_out(&format!("<div style='max-height:20px'>{body}</div>"), 800.0);
+        let clipped = lay_out(&format!("<div style='max-height:20px;overflow:hidden'>{body}</div>"), 800.0);
+        assert!(clipped.height < free.height);
+    }
+
+    #[test]
+    fn min_width_overrides_a_narrow_box() {
+        let narrow = lay_out("<div style='width:50px'>hello</div>", 800.0);
+        let wide = lay_out("<div style='width:50px;min-width:400px;background:#f00'>hello</div>", 800.0);
+        assert!(wide.items.iter().any(|i| matches!(i, crate::layout::Item::Rect { w, .. } if *w >= 400.0)));
+        assert!(!narrow.items.iter().any(|i| matches!(i, crate::layout::Item::Rect { .. })));
     }
 }

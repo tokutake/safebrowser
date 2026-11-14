@@ -84,6 +84,7 @@ cargo test -- --ignored   # end-to-end tests against real sites (needs network)
   - images (`<img>` with `src` / `srcset`'s first candidate / `data:` URLs; sized by CSS, `width` / `height` attributes or aspect ratio; may be links, floats, or block-level; not CSS `background-image`, SVG or `<picture>`)
   - `z-index` orders `absolute`/`fixed` boxes (negative below in-flow content, positive above other positioned boxes; nested stacking contexts are approximated)
   - `overflow: hidden` / `clip` / `scroll` / `auto` clip content to the box's padding edge (absolutely positioned descendants are not clipped)
+  - `min-width` / `min-height` (px, %, em), and `max-height` on boxes that clip their overflow
   - `text-transform` (uppercase / lowercase / capitalize) and `text-decoration: line-through` (in addition to underline)
   - `::before` / `::after` with string, `attr()` and quote content (icon-font glyphs are dropped)
 - **Backgrounds**: `background-image: url(...)` (also in the `background` shorthand) with `background-size` (`cover`, `contain`, lengths, `100%`), `background-repeat` (repeat / `no-repeat`) and `background-position` (keywords, percentages). Images are fetched like `<img>`; relative URLs resolve against the page, not the stylesheet; gradients are ignored. A box with a background image keeps its `height`.

@@ -205,6 +205,9 @@ pub struct Style {
     pub width: Len,
     pub height: Len,
     pub max_width: Len,
+    pub min_width: Len,
+    pub min_height: Len,
+    pub max_height: Len,
     /// The common "visually hidden" (sr-only) pattern: content meant only for screen readers.
     visually_hidden: bool,
     height_1px: bool,
@@ -268,6 +271,9 @@ impl Style {
             width: Len::Auto,
             height: Len::Auto,
             max_width: Len::Auto,
+            min_width: Len::Auto,
+            min_height: Len::Auto,
+            max_height: Len::Auto,
             visually_hidden: false,
             height_1px: false,
             flex_column: false,
@@ -313,6 +319,9 @@ impl Style {
             width: Len::Auto,
             height: Len::Auto,
             max_width: Len::Auto,
+            min_width: Len::Auto,
+            min_height: Len::Auto,
+            max_height: Len::Auto,
             visually_hidden: false,
             height_1px: false,
             flex_column: false,
@@ -823,6 +832,9 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
         // so dropping it (instead of reserving its space) is closer to what users see
         "visibility" => s.visually_hidden = v == "hidden" || v == "collapse",
         "clip-path" => s.visually_hidden |= v.starts_with("inset(50%") || v.starts_with("inset(100%") || v.starts_with("rect(0"),
+        "min-width" => s.min_width = if v == "auto" { Len::Auto } else { parse_length(v, s.font_size).unwrap_or(s.min_width) },
+        "min-height" => s.min_height = if v == "auto" { Len::Auto } else { parse_length(v, s.font_size).unwrap_or(s.min_height) },
+        "max-height" => s.max_height = if v == "none" { Len::Auto } else { parse_length(v, s.font_size).unwrap_or(s.max_height) },
         "max-width" => s.max_width = if v == "none" { Len::Auto } else { parse_length(v, s.font_size).unwrap_or(s.max_width) },
         "border" => {
             for side in 0..4 {
