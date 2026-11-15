@@ -235,6 +235,8 @@ pub struct Style {
     pub z_index: i32,
     /// `overflow` other than `visible`: content is clipped to the padding box.
     pub clip_overflow: bool,
+    /// `opacity` accumulated down the tree (0..=1); applied by blending colours toward white.
+    pub opacity: f32,
     /// `top`, `right`, `bottom`, `left`
     pub inset: [Len; 4],
     /// `clear`: (left, right)
@@ -295,6 +297,7 @@ impl Style {
             position: Position::Static,
             z_index: 0,
             clip_overflow: false,
+            opacity: 1.0,
             inset: [Len::Auto; 4],
             clear: (false, false),
             content: None,
@@ -549,6 +552,18 @@ fn compute(el: &Element, parent: &Style, ancestors: &[&Element], index: &Index) 
     let inline = el.attr("style").map(css::parse_declarations).unwrap_or_default();
     let own: Vec<Entry> = matched.iter().filter(|e| e.selector.pseudo.is_none()).copied().collect();
     cascade(&mut style, parent, &own, &inline);
+    if style.opacity < 1.0 {
+        // Approximation: no real compositing, so colours fade toward the white page.
+        // Inherited colours were already faded by the parent.
+        let a = style.opacity;
+        if style.color != parent.color {
+            style.color = blend_on_white(style.color, a);
+        }
+        if style.border_color != parent.color {
+            style.border_color = blend_on_white(style.border_color, a);
+        }
+        style.background = style.background.map(|c| blend_on_white(c, a));
+    }
     // Floats and absolutely positioned boxes are always block-level
     if style.float != Float::None || style.position.out_of_flow() {
         if style.display == Display::Inline {
@@ -903,6 +918,16 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
                 "absolute" => Position::Absolute,
                 "fixed" => Position::Fixed,
                 _ => Position::Static,
+            }
+        }
+        "opacity" => {
+            let v = v.trim();
+            let n = match v.strip_suffix('%') {
+                Some(p) => p.trim().parse::<f32>().ok().map(|x| x / 100.0),
+                None => v.parse::<f32>().ok(),
+            };
+            if let Some(n) = n.filter(|n| n.is_finite()) {
+                s.opacity = parent.opacity * n.clamp(0.0, 1.0);
             }
         }
         "z-index" => s.z_index = v.trim().parse::<i32>().unwrap_or(0).clamp(-1_000_000, 1_000_000),
@@ -1405,6 +1430,21 @@ mod tests {
         vars.insert("--b".to_string(), "#fff".to_string());
         assert_eq!(substitute_vars("var(--b)", &vars).as_deref(), Some("#fff"));
         assert_eq!(substitute_vars("var(--x, red)", &vars).as_deref(), Some("red"));
+    }
+
+    #[test]
+    fn opacity_fades_colours_and_accumulates() {
+        let mut s = Style::root();
+        let parent = Style::root();
+        apply(&mut s, &parent, "opacity", "0.5");
+        assert_eq!(s.opacity, 0.5);
+        let child_parent = s.clone();
+        let mut c = Style::inherit(&child_parent);
+        apply(&mut c, &child_parent, "opacity", "50%");
+        assert_eq!(c.opacity, 0.25);
+        apply(&mut c, &child_parent, "opacity", "bogus");
+        assert_eq!(c.opacity, 0.25);
+        assert_eq!(blend_on_white(0x000000, 0.5), 0x808080);
     }
 
     #[test]

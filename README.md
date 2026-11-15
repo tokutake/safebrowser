@@ -86,6 +86,7 @@ cargo test -- --ignored   # end-to-end tests against real sites (needs network)
   - `overflow: hidden` / `clip` / `scroll` / `auto` clip content to the box's padding edge (absolutely positioned descendants are not clipped)
   - `min-width` / `min-height` (px, %, em), and `max-height` on boxes that clip their overflow
   - `text-transform` (uppercase / lowercase / capitalize) and `text-decoration: line-through` (in addition to underline)
+  - `opacity` (approximated: text, background and border colours are blended toward white, nested opacities multiply; images are not faded)
   - `::before` / `::after` with string, `attr()` and quote content (icon-font glyphs are dropped)
 - **Backgrounds**: `background-image: url(...)` (also in the `background` shorthand) with `background-size` (`cover`, `contain`, lengths, `100%`), `background-repeat` (repeat / `no-repeat`) and `background-position` (keywords, percentages). Images are fetched like `<img>`; relative URLs resolve against the page, not the stylesheet; gradients are ignored. A box with a background image keeps its `height`.
 - **Selectors**: type, class, ID, attribute (`=`, `~=`, `|=`, `^=`, `$=`, `*=`, `i` flag), all four combinators, structural pseudo-classes (`:first-child`, `:nth-child()`, `*-of-type`, `:empty`, ...), `:not()` / `:is()` / `:where()`, `:checked` / `:disabled`, and escaped class names. Interaction and history states (`:hover`, `:focus`, `:visited`, ...) never match.
