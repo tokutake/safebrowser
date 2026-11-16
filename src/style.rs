@@ -184,6 +184,8 @@ pub struct Style {
     /// `background-image: url(...)`, as written (looked up in the page's image table).
     pub bg_image: Option<Rc<str>>,
     pub bg_size: BgSize,
+    /// `border-radius` for the background: (px, fraction of the smaller side).
+    pub radius: (f32, f32),
     pub bg_repeat: bool,
     /// Image position as fractions of the free space (x, y).
     pub bg_pos: (f32, f32),
@@ -254,6 +256,7 @@ impl Style {
             background: None,
             bg_image: None,
             bg_size: BgSize::Auto,
+            radius: (0.0, 0.0),
             bg_repeat: true,
             bg_pos: (0.0, 0.0),
             font_size: 16.0,
@@ -312,6 +315,7 @@ impl Style {
             background: None,
             bg_image: None,
             bg_size: BgSize::Auto,
+            radius: (0.0, 0.0),
             bg_repeat: true,
             bg_pos: (0.0, 0.0),
             margin: [Len::Px(0.0); 4],
@@ -791,6 +795,13 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
             }
         }
         "background-image" => s.bg_image = None, // the URL keeps its case, see `cascade`
+        "border-radius" => {
+            // Only the first value (all corners alike) is used
+            s.radius = match v.split(['/', ' ']).next().unwrap_or("") {
+                f if f.ends_with('%') => (0.0, f[..f.len() - 1].parse::<f32>().map_or(0.0, |n| (n / 100.0).clamp(0.0, 0.5))),
+                f => (parse_px(f, s.font_size).unwrap_or(0.0).max(0.0), 0.0),
+            };
+        }
         "background-size" => s.bg_size = parse_bg_size(v, s.font_size),
         "background-repeat" => s.bg_repeat = !v.starts_with("no-repeat"),
         "background-position" => s.bg_pos = parse_bg_pos(v),

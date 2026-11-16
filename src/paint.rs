@@ -61,6 +61,32 @@ impl Canvas {
         }
     }
 
+    /// Fills a box whose corners are rounded with radius `r`.
+    pub fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32) {
+        let r = r.min(w / 2.0).min(h / 2.0);
+        let x0 = (x.floor() as i32).max(self.clip[0]);
+        let y0 = (y.floor() as i32).max(self.clip[1]);
+        let x1 = ((x + w).ceil() as i32).min(self.clip[2]);
+        let y1 = ((y + h).ceil() as i32).min(self.clip[3]);
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                // Distance outside the corner circle, if the pixel is in a corner square
+                let dx = (x + r - cx).max(cx - (x + w - r)).max(0.0);
+                let dy = (y + r - cy).max(cy - (y + h - r)).max(0.0);
+                let cover = (r + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+                // Partial pixels at the box edge
+                let ex = (cx + 0.5).min(x + w) - (cx - 0.5).max(x);
+                let ey = (cy + 0.5).min(y + h) - (cy - 0.5).max(y);
+                let a = (cover * ex.clamp(0.0, 1.0) * ey.clamp(0.0, 1.0) * 255.0) as u8;
+                if a > 0 {
+                    let i = py as usize * self.w + px as usize;
+                    self.buf[i] = blend(self.buf[i], color, a);
+                }
+            }
+        }
+    }
+
     /// Draws an image scaled to the box (x, y, w, h).
     pub fn image(&mut self, x: f32, y: f32, w: f32, h: f32, image: &Arc<Image>) {
         let (dw, dh) = ((w.round() as u32).max(1), (h.round() as u32).max(1));
@@ -259,6 +285,12 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                 let sy = y + dy;
                 if sy < bottom && sy + h > top {
                     canvas.rect(*x, sy, *w, *h, *color);
+                }
+            }
+            Item::RoundRect { x, y, w, h, r, color } => {
+                let sy = y + dy;
+                if sy < bottom && sy + h > top {
+                    canvas.round_rect(*x, sy, *w, *h, *r, *color);
                 }
             }
             Item::Image { x, y, w, h, image } => {
