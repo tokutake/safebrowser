@@ -13,6 +13,8 @@ use crate::style::{Align, AlignItems, Display, Float, GridLine, Position, GridPl
 #[derive(Clone)]
 pub enum Item {
     Rect { x: f32, y: f32, w: f32, h: f32, color: u32 },
+    /// A filled box with rounded corners (`border-radius`); `r` is in px.
+    RoundRect { x: f32, y: f32, w: f32, h: f32, r: f32, color: u32 },
     /// y is the baseline.
     Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: u32 },
     Image { x: f32, y: f32, w: f32, h: f32, image: Arc<Image> },
@@ -429,7 +431,12 @@ impl Layouter<'_> {
         }
 
         if let (Some(slot), Some(color)) = (bg_slot, background) {
-            self.out.items[slot] = Item::Rect { x: left, y: top, w: outer_w, h: height, color };
+            let r = (s.radius.0 + s.radius.1 * outer_w.min(height)).min(outer_w.min(height) / 2.0);
+            self.out.items[slot] = if r >= 0.5 {
+                Item::RoundRect { x: left, y: top, w: outer_w, h: height, r, color }
+            } else {
+                Item::Rect { x: left, y: top, w: outer_w, h: height, color }
+            };
         }
         if let (Some(slot), Some(image)) = (bg_image_slot, bg_image) {
             // The image fills the padding box
@@ -1720,7 +1727,7 @@ fn background_tile(image: &Image, size: crate::style::BgSize, bw: f32, bh: f32) 
 fn offset_items(items: &mut [Item], dx: f32, dy: f32) {
     for item in items {
         match item {
-            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } | Item::BgImage { x, y, .. } | Item::PushClip { x, y, .. } => {
+            Item::Rect { x, y, .. } | Item::RoundRect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } | Item::BgImage { x, y, .. } | Item::PushClip { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -2178,6 +2185,14 @@ mod image_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn border_radius_rounds_backgrounds() {
+        let l = lay_out_with("<div style='width:100px;padding:20px 0;background:#f00;border-radius:8px'></div><div style='width:100px;padding:20px 0;background:#0f0;border-radius:50%'></div><div style='width:100px;padding:20px 0;background:#00f'></div>", 800.0, 1, 1);
+        let radii: Vec<f32> = l.items.iter().filter_map(|i| if let Item::RoundRect { r, .. } = i { Some(*r) } else { None }).collect();
+        assert_eq!(radii, vec![8.0, 20.0]);
+        assert!(l.items.iter().any(|i| matches!(i, Item::Rect { color: 0x0000ff, .. })));
     }
 
     #[test]
