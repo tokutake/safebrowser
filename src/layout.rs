@@ -1367,6 +1367,10 @@ impl Layouter<'_> {
             placed: Vec::new(),
         };
         self.update_band(&mut line);
+        // text-indent: the first line starts further in (left-aligned text only)
+        if let (Some(first), Align::Left) = (run.first(), align) {
+            line.cx = first.style.text_indent.min(line.width * 0.9);
+        }
         for frag in frags {
             match frag {
                 Frag::Space(style) => {
@@ -2302,5 +2306,25 @@ mod min_max_tests {
         let wide = lay_out("<div style='width:50px;min-width:400px;background:#f00'>hello</div>", 800.0);
         assert!(wide.items.iter().any(|i| matches!(i, crate::layout::Item::Rect { w, .. } if *w >= 400.0)));
         assert!(!narrow.items.iter().any(|i| matches!(i, crate::layout::Item::Rect { .. })));
+    }
+}
+
+#[cfg(test)]
+mod text_indent_tests {
+    use super::tests::{lay_out, texts};
+
+    #[test]
+    fn indents_only_the_first_line() {
+        let t = texts(&lay_out("<p style='text-indent:40px;width:60px'>aaa bbb ccc</p>", 800.0));
+        let plain = texts(&lay_out("<p style='width:60px'>aaa bbb ccc</p>", 800.0));
+        assert!((t[0].1 - plain[0].1 - 40.0).abs() < 0.5);
+        assert!((t[1].1 - plain[1].1).abs() < 0.5);
+    }
+
+    #[test]
+    fn indent_is_inherited_by_text() {
+        let t = texts(&lay_out("<div style='text-indent:2em'><p>x</p></div>", 800.0));
+        let plain = texts(&lay_out("<p>x</p>", 800.0));
+        assert!(t[0].1 > plain[0].1 + 20.0);
     }
 }

@@ -196,6 +196,8 @@ pub struct Style {
     pub text_transform: TextTransform,
     pub pre: bool,
     pub text_align: Align,
+    /// Extra indent of the first line of a block, in px (negative values are ignored).
+    pub text_indent: f32,
     pub line_height: f32,
     pub list_marker: bool,
     /// [top, right, bottom, left]
@@ -266,6 +268,7 @@ impl Style {
             text_transform: TextTransform::None,
             pre: false,
             text_align: Align::Left,
+            text_indent: 0.0,
             line_height: 1.45,
             list_marker: true,
             margin: [Len::Px(0.0); 4],
@@ -823,6 +826,7 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
             }
         }
         "line-height" => s.line_height = parse_line_height(v, s.font_size).unwrap_or(s.line_height),
+        "text-indent" => s.text_indent = parse_px(v.split_whitespace().next().unwrap_or(""), s.font_size).unwrap_or(0.0),
         "text-align" => {
             s.text_align = match v {
                 "center" | "-webkit-center" => Align::Center,
