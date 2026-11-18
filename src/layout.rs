@@ -16,7 +16,7 @@ pub enum Item {
     /// A filled box with rounded corners (`border-radius`); `r` is in px.
     RoundRect { x: f32, y: f32, w: f32, h: f32, r: f32, color: u32 },
     /// y is the baseline.
-    Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: u32 },
+    Text { x: f32, y: f32, text: String, size: f32, bold: bool, color: u32, spacing: f32 },
     Image { x: f32, y: f32, w: f32, h: f32, image: Arc<Image> },
     /// A CSS background image: `tile` is one copy of the image placed at (`ox`, `oy`) from the
     /// box corner, repeated over the box when `repeat` is set.
@@ -166,11 +166,12 @@ struct TextStyle {
     underline: bool,
     line_through: bool,
     line_height: f32,
+    letter_spacing: f32,
 }
 
 impl From<&Style> for TextStyle {
     fn from(s: &Style) -> Self {
-        TextStyle { size: s.font_size, bold: s.bold, color: s.color, underline: s.underline, line_through: s.line_through, line_height: s.line_height }
+        TextStyle { size: s.font_size, bold: s.bold, color: s.color, underline: s.underline, line_through: s.line_through, line_height: s.line_height, letter_spacing: s.letter_spacing }
     }
 }
 
@@ -380,6 +381,7 @@ impl Layouter<'_> {
                 size: s.font_size,
                 bold: false,
                 color: s.color,
+                spacing: 0.0,
             });
         }
 
@@ -1246,6 +1248,11 @@ impl Layouter<'_> {
     }
 
     /// (longest word, longest unbroken line) of a fragment list.
+    /// Width of a word including letter-spacing after every character.
+    fn measure_word(&mut self, text: &str, style: &TextStyle) -> f32 {
+        self.fonts.measure(text, style.size, style.bold) + style.letter_spacing * text.chars().count() as f32
+    }
+
     fn measure_frags(&mut self, frags: &[Frag]) -> (f32, f32) {
         let (mut min, mut max, mut line, mut pending) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         for frag in frags {
@@ -1256,7 +1263,7 @@ impl Layouter<'_> {
                     pending = 0.0;
                 }
                 Frag::Word(text, style, _) => {
-                    let w = self.fonts.measure(text, style.size, style.bold);
+                    let w = self.measure_word(text, style);
                     min = min.max(w);
                     line += pending + w;
                     pending = 0.0;
@@ -1387,7 +1394,7 @@ impl Layouter<'_> {
                     }
                 }
                 Frag::Word(text, style, href) => {
-                    let w = self.fonts.measure(&text, style.size, style.bold);
+                    let w = self.measure_word(&text, &style);
                     if !line.placed.is_empty() && line.cx + line.pending_space + w > line.width + FIT_EPSILON {
                         self.flush(&mut line);
                     }
@@ -1429,7 +1436,7 @@ impl Layouter<'_> {
         let mut chunk = String::new();
         let mut chunk_w = 0.0;
         for c in text.chars() {
-            let cw = self.fonts.measure(c.encode_utf8(&mut [0; 4]), style.size, style.bold);
+            let cw = self.fonts.measure(c.encode_utf8(&mut [0; 4]), style.size, style.bold) + style.letter_spacing;
             if chunk_w + cw > line.width + FIT_EPSILON && !chunk.is_empty() {
                 line.placed.push(Placed { widget: None, x: 0.0, lead: 0.0, w: chunk_w, text: std::mem::take(&mut chunk), style: style.clone(), href: href.clone() });
                 line.cx = chunk_w;
@@ -1473,6 +1480,7 @@ impl Layouter<'_> {
                     size: style.size,
                     bold: style.bold,
                     color: 0x202124,
+                    spacing: 0.0,
                 });
                 if let Some(target) = target {
                     self.out.links.push(LinkBox { x, y, w, h, target });
@@ -1529,14 +1537,14 @@ impl Layouter<'_> {
                 self.out.links.push(LinkBox { x: px, y: line.cy, w: p.w, h: line_h, target });
             }
             // Merge adjacent words with the same style (e.g. per-character CJK) into one draw command
-            if let (Some(end), Some(Item::Text { text, size, bold, color, .. })) = (prev_end, self.out.items.last_mut()) {
-                if (end - px).abs() < 0.01 && *size == p.style.size && *bold == p.style.bold && *color == p.style.color && !p.style.underline && !p.style.line_through {
+            if let (Some(end), Some(Item::Text { text, size, bold, color, spacing, .. })) = (prev_end, self.out.items.last_mut()) {
+                if (end - px).abs() < 0.01 && *size == p.style.size && *bold == p.style.bold && *color == p.style.color && *spacing == p.style.letter_spacing && !p.style.underline && !p.style.line_through {
                     text.push_str(&p.text);
                     prev_end = Some(px + p.w);
                     continue;
                 }
             }
-            self.out.items.push(Item::Text { x: px, y: baseline, text: p.text, size: p.style.size, bold: p.style.bold, color: p.style.color });
+            self.out.items.push(Item::Text { x: px, y: baseline, text: p.text, size: p.style.size, bold: p.style.bold, color: p.style.color, spacing: p.style.letter_spacing });
             prev_end = (!p.style.underline && !p.style.line_through).then_some(px + p.w);
         }
         line.cy += line_h;
@@ -2326,5 +2334,23 @@ mod text_indent_tests {
         let t = texts(&lay_out("<div style='text-indent:2em'><p>x</p></div>", 800.0));
         let plain = texts(&lay_out("<p>x</p>", 800.0));
         assert!(t[0].1 > plain[0].1 + 20.0);
+    }
+}
+
+#[cfg(test)]
+mod letter_spacing_tests {
+    use super::tests::{lay_out, texts};
+
+    #[test]
+    fn spacing_widens_the_word_and_pushes_the_next() {
+        let t = texts(&lay_out("<p><span style='letter-spacing:5px'>abc</span><b>d</b></p>", 800.0));
+        let plain = texts(&lay_out("<p><span>abc</span><b>d</b></p>", 800.0));
+        assert!((t[1].1 - plain[1].1 - 15.0).abs() < 0.5, "{t:?} vs {plain:?}");
+    }
+
+    #[test]
+    fn spacing_is_inherited_and_causes_wrapping() {
+        let t = texts(&lay_out("<div style='letter-spacing:10px;width:100px'>aaaa bbbb</div>", 800.0));
+        assert!(t.len() >= 2 && t[1].2 > t[0].2, "{t:?}");
     }
 }
