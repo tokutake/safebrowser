@@ -125,6 +125,12 @@ impl Canvas {
 
     /// Draws text and returns its width.
     pub fn text(&mut self, fonts: &mut Fonts, x: f32, baseline: f32, text: &str, size: f32, bold: bool, color: u32) -> f32 {
+        self.text_spaced(fonts, x, baseline, text, size, bold, color, 0.0)
+    }
+
+    /// Like `text`, with `spacing` extra pixels after every character.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_spaced(&mut self, fonts: &mut Fonts, x: f32, baseline: f32, text: &str, size: f32, bold: bool, color: u32, spacing: f32) -> f32 {
         let mut pen = x;
         for c in text.chars() {
             if pen > self.clip[2] as f32 {
@@ -134,7 +140,7 @@ impl Canvas {
             let gx = pen.round() as i32 + m.xmin;
             let gy = baseline.round() as i32 - m.height as i32 - m.ymin;
             self.blit(gx, gy, m.width, m.height, bitmap, color);
-            pen += m.advance_width;
+            pen += m.advance_width + spacing;
         }
         pen - x
     }
@@ -331,10 +337,10 @@ pub fn paint_page(canvas: &mut Canvas, fonts: &mut Fonts, layout: &PageLayout, d
                     }
                 }
             }
-            Item::Text { x, y, text, size, bold, color } => {
+            Item::Text { x, y, text, size, bold, color, spacing } => {
                 let sy = y + dy;
                 if sy - size < bottom && sy + size * 0.4 > top {
-                    canvas.text(fonts, *x, sy, text, *size, *bold, *color);
+                    canvas.text_spaced(fonts, *x, sy, text, *size, *bold, *color, *spacing);
                 }
             }
         }

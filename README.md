@@ -87,6 +87,7 @@ cargo test -- --ignored   # end-to-end tests against real sites (needs network)
   - `min-width` / `min-height` (px, %, em), and `max-height` on boxes that clip their overflow
   - `text-transform` (uppercase / lowercase / capitalize) and `text-decoration: line-through` (in addition to underline)
   - `opacity` (approximated: text, background and border colours are blended toward white, nested opacities multiply; images are not faded)
+  - `letter-spacing` (px/em, applied after every character; `normal` is 0)
   - `text-indent` (px/em, left-aligned text; first line of each block)
   - `border-radius` rounds the background (one radius for all corners, px/em/%; borders and images stay square)
   - `::before` / `::after` with string, `attr()` and quote content (icon-font glyphs are dropped)
