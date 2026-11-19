@@ -167,11 +167,12 @@ struct TextStyle {
     line_through: bool,
     line_height: f32,
     letter_spacing: f32,
+    word_spacing: f32,
 }
 
 impl From<&Style> for TextStyle {
     fn from(s: &Style) -> Self {
-        TextStyle { size: s.font_size, bold: s.bold, color: s.color, underline: s.underline, line_through: s.line_through, line_height: s.line_height, letter_spacing: s.letter_spacing }
+        TextStyle { size: s.font_size, bold: s.bold, color: s.color, underline: s.underline, line_through: s.line_through, line_height: s.line_height, letter_spacing: s.letter_spacing, word_spacing: s.word_spacing }
     }
 }
 
@@ -1248,6 +1249,11 @@ impl Layouter<'_> {
     }
 
     /// (longest word, longest unbroken line) of a fragment list.
+    /// Width of an inter-word space, including `word-spacing`.
+    fn space_width(&mut self, style: &TextStyle) -> f32 {
+        (self.fonts.measure(" ", style.size, style.bold) + style.word_spacing).max(0.0)
+    }
+
     /// Width of a word including letter-spacing after every character.
     fn measure_word(&mut self, text: &str, style: &TextStyle) -> f32 {
         self.fonts.measure(text, style.size, style.bold) + style.letter_spacing * text.chars().count() as f32
@@ -1270,7 +1276,7 @@ impl Layouter<'_> {
                 }
                 Frag::Space(style) => {
                     if line > 0.0 {
-                        pending = self.fonts.measure(" ", style.size, style.bold);
+                        pending = self.space_width(style);
                     }
                 }
                 Frag::Break(_) => {
@@ -1382,7 +1388,7 @@ impl Layouter<'_> {
             match frag {
                 Frag::Space(style) => {
                     if !line.placed.is_empty() {
-                        line.pending_space = self.fonts.measure(" ", style.size, style.bold);
+                        line.pending_space = self.space_width(&style);
                     }
                 }
                 Frag::Break(style) => {
@@ -2352,5 +2358,24 @@ mod letter_spacing_tests {
     fn spacing_is_inherited_and_causes_wrapping() {
         let t = texts(&lay_out("<div style='letter-spacing:10px;width:100px'>aaaa bbbb</div>", 800.0));
         assert!(t.len() >= 2 && t[1].2 > t[0].2, "{t:?}");
+    }
+}
+
+#[cfg(test)]
+mod word_spacing_tests {
+    use super::tests::{lay_out, texts};
+
+    #[test]
+    fn word_spacing_widens_gaps() {
+        let t = texts(&lay_out("<p style='word-spacing:20px'>a b</p>", 800.0));
+        let plain = texts(&lay_out("<p>a b</p>", 800.0));
+        assert!((t[1].1 - plain[1].1 - 20.0).abs() < 0.5, "{t:?} vs {plain:?}");
+    }
+
+    #[test]
+    fn word_spacing_is_inherited() {
+        let t = texts(&lay_out("<div style='word-spacing:30px'><span>a b</span></div>", 800.0));
+        let plain = texts(&lay_out("<div><span>a b</span></div>", 800.0));
+        assert!((t[1].1 - plain[1].1 - 30.0).abs() < 0.5, "{t:?} vs {plain:?}");
     }
 }
