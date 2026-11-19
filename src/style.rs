@@ -200,6 +200,8 @@ pub struct Style {
     pub text_indent: f32,
     /// Extra space after every character, in px (may be negative).
     pub letter_spacing: f32,
+    /// Extra space added to every inter-word space, in px (may be negative).
+    pub word_spacing: f32,
     pub line_height: f32,
     pub list_marker: bool,
     /// [top, right, bottom, left]
@@ -272,6 +274,7 @@ impl Style {
             text_align: Align::Left,
             text_indent: 0.0,
             letter_spacing: 0.0,
+            word_spacing: 0.0,
             line_height: 1.45,
             list_marker: true,
             margin: [Len::Px(0.0); 4],
@@ -832,6 +835,12 @@ fn apply(s: &mut Style, parent: &Style, name: &str, v: &str) {
         "letter-spacing" => {
             s.letter_spacing = match parse_length(v.trim(), s.font_size) {
                 Some(Len::Px(px)) => px.clamp(-s.font_size, s.font_size * 4.0),
+                _ => 0.0,
+            }
+        }
+        "word-spacing" => {
+            s.word_spacing = match parse_length(v.trim(), s.font_size) {
+                Some(Len::Px(px)) => px.clamp(-s.font_size, s.font_size * 8.0),
                 _ => 0.0,
             }
         }
